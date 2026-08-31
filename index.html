@@ -1,0 +1,346 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>TOPO · Надёжность горного оборудования · SAP PM-M06</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+  <style>
+    :root {
+      --bg: #0b0f14;
+      --panel: #121922;
+      --panel2: #182230;
+      --line: #243044;
+      --text: #e8eef6;
+      --muted: #93a4b8;
+      --gold: #d4a017;
+      --gold2: #f0c14b;
+      --cyan: #3ec6c9;
+      --green: #3dcf8e;
+      --red: #ef6b6b;
+      --orange: #f0a05a;
+      --blue: #6aa8ff;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text); font-family: "Segoe UI", system-ui, sans-serif; }
+    a { color: var(--cyan); }
+    header {
+      padding: 28px 28px 12px;
+      background: linear-gradient(180deg, #18283a 0%, var(--bg) 100%);
+      border-bottom: 1px solid var(--line);
+    }
+    header h1 { margin: 0 0 6px; font-size: 28px; letter-spacing: .02em; }
+    header p { margin: 0; color: var(--muted); max-width: 1100px; line-height: 1.45; }
+    .badge { display: inline-block; margin-right: 8px; margin-top: 10px; padding: 3px 10px; border: 1px solid var(--line); border-radius: 999px; color: var(--gold2); font-size: 12px; }
+    nav { display: flex; gap: 8px; flex-wrap: wrap; padding: 14px 28px; position: sticky; top: 0; background: rgba(11,15,20,.92); backdrop-filter: blur(8px); z-index: 5; border-bottom: 1px solid var(--line); }
+    nav a { text-decoration: none; color: var(--text); font-size: 13px; padding: 6px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }
+    nav a:hover { border-color: var(--gold); }
+    main { padding: 18px 28px 60px; }
+    section { margin: 28px 0; }
+    h2 { font-size: 20px; margin: 0 0 12px; }
+    h3 { font-size: 15px; margin: 0 0 8px; color: var(--gold2); }
+    .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; }
+    .kpi { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 14px 16px; }
+    .kpi .lbl { color: var(--muted); font-size: 12px; }
+    .kpi .val { font-size: 24px; font-weight: 700; margin-top: 4px; }
+    .kpi .sub { color: var(--muted); font-size: 12px; margin-top: 4px; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 14px; }
+    .card { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 14px; }
+    canvas { max-height: 280px; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th, td { padding: 7px 8px; border-bottom: 1px solid var(--line); text-align: left; }
+    th { color: var(--muted); font-weight: 600; position: sticky; top: 0; background: var(--panel); }
+    td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+    .wrap { max-height: 420px; overflow: auto; }
+    .filters { display: flex; gap: 10px; flex-wrap: wrap; margin: 8px 0 16px; }
+    select, input {
+      background: var(--panel2); color: var(--text); border: 1px solid var(--line);
+      border-radius: 8px; padding: 7px 10px; font-size: 13px;
+    }
+    .insight { background: #18291f; border: 1px solid #2b5a3d; border-radius: 12px; padding: 12px 14px; margin: 8px 0; }
+    .warn { background: #2a1d14; border: 1px solid #6a3f1c; }
+    .note { color: var(--muted); font-size: 13px; line-height: 1.5; }
+    footer { color: var(--muted); font-size: 12px; padding: 20px 28px 40px; border-top: 1px solid var(--line); }
+    .bar { height: 8px; background: #223; border-radius: 99px; overflow: hidden; }
+    .bar > span { display: block; height: 100%; background: linear-gradient(90deg, var(--gold), var(--cyan)); }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>TOPO · Аналитика ТОиР горного парка</h1>
+    <p>Интерактивный разбор выгрузок SAP BW <b>PM-M06</b> (планирование и исполнение воздействий на производство).
+      Показатели построены по заказам ТОРО, единицам оборудования, видам работ и стоимости МТР план/факт.
+      Сырые архивы лежат в ветке <code>rawdata</code>.</p>
+    <span class="badge">ISO 14224 / SAP PM</span>
+    <span class="badge">КТГ · MTBF · MTTR — методология</span>
+    <span class="badge" id="genBadge">загрузка…</span>
+  </header>
+  <nav>
+    <a href="#kpis">KPI</a>
+    <a href="#sites">Активы</a>
+    <a href="#mix">Плановый / аварийный</a>
+    <a href="#fleet">Парк</a>
+    <a href="#eq">Единицы</a>
+    <a href="#parts">Запчасти</a>
+    <a href="#method">Методика</a>
+  </nav>
+  <main>
+    <section id="kpis">
+      <h2>Сводка по разобранным Excel</h2>
+      <div class="filters">
+        <label>Площадка
+          <select id="fSite"><option value="">Все</option></select>
+        </label>
+        <label>Год
+          <select id="fYear"><option value="">Все</option></select>
+        </label>
+      </div>
+      <div class="kpis" id="kpiBox"></div>
+    </section>
+
+    <section id="sites">
+      <h2>Площадки и годы</h2>
+      <div class="grid">
+        <div class="card"><h3>План МТР по годам</h3><canvas id="cYear"></canvas></div>
+        <div class="card"><h3>Структура парка (по группе МВЗ)</h3><canvas id="cFleet"></canvas></div>
+      </div>
+      <div class="card" style="margin-top:14px">
+        <h3>Матрица площадка × год</h3>
+        <div class="wrap" id="siteYearTbl"></div>
+      </div>
+    </section>
+
+    <section id="mix">
+      <h2>Плановые vs неплановые воздействия</h2>
+      <div class="grid">
+        <div class="card"><h3>Класс работ (по тексту SAP)</h3><canvas id="cClass"></canvas></div>
+        <div class="card"><h3>Топ видов работ ТОРО</h3><canvas id="cWork"></canvas></div>
+      </div>
+      <div id="mixInsights"></div>
+    </section>
+
+    <section id="fleet">
+      <h2>Модели и месячная динамика</h2>
+      <div class="grid">
+        <div class="card"><h3>Динамика план/факт по месяцу базиса заказа</h3><canvas id="cMonth"></canvas></div>
+        <div class="card"><h3>Топ моделей</h3><div class="wrap" id="modelTbl"></div></div>
+      </div>
+    </section>
+
+    <section id="eq">
+      <h2>Единицы оборудования с наибольшей стоимостью воздействий</h2>
+      <div class="card wrap" id="eqTbl"></div>
+    </section>
+
+    <section id="parts">
+      <h2>Критичные позиции МТР</h2>
+      <p class="note">Топ компонентов заказов по сумме план+факт. Это кандидаты на страховой запас и контракты с OEM (CAT, Komatsu, БелАЗ и др.).</p>
+      <div class="card wrap" id="partTbl"></div>
+    </section>
+
+    <section id="method">
+      <h2>Методика и лучшие практики ТОиР карьера</h2>
+      <div class="insight">
+        <b>Что есть в PM-M06.</b> Заказы на этапе планирования, базисные сроки, вид работы ТОРО, хозспособ/УСО,
+        компоненты и стоимость МТР план/факт, марка ЕО, группа МВЗ, статусы.
+      </div>
+      <div class="insight warn">
+        <b>Чего нет в этой выгрузке.</b> Часы наработки, сообщения с индикатором останова, фактическое время простоя.
+        Поэтому классические <b>MTBF / MTTR / КТГ</b> здесь считаются только методически, не как точная цифра смены.
+        Для них нужна лента остановов или лист показателей с KF_ALG_*.
+      </div>
+      <div class="card">
+        <h3>Формулы, которые стоит считать в следующем цикле SAP</h3>
+        <table>
+          <tr><th>KPI</th><th>Формула</th><th>Мировая практика open-pit</th></tr>
+          <tr><td>КТГ (механическая готовность)</td><td>MTBF / (MTBF + MTTR) либо (календарь − простой ТОиР) / календарь</td><td>целевой коридор 87–95% по классу актива</td></tr>
+          <tr><td>MTBF</td><td>Часы работы / число отказов</td><td>экскаваторы часто 400–600 моточасов; самосвалы выше</td></tr>
+          <tr><td>MTTR / MRT</td><td>Сумма ремонтов / число ремонтов</td><td>растёт — дефицит запчастей, ожидание УСО, слабая диагностика</td></tr>
+          <tr><td>Доля плановых работ</td><td>Часы/стоимость ППР и ТО / все воздействия</td><td>world-class &gt; 80% плановых, &lt; 20% реактивных</td></tr>
+          <tr><td>PM compliance</td><td>ППР выполненные в окне / запланированные</td><td>&gt; 90%</td></tr>
+          <tr><td>Исполнение бюджета МТР</td><td>Факт / план</td><td>смотреть вместе с покрытием резервов, не отдельно</td></tr>
+        </table>
+      </div>
+      <p class="note" id="fileNote"></p>
+    </section>
+  </main>
+  <footer>
+    Источник: SAP BW PM-M06 · отчёт для GitHub Pages · ветка <code>main</code>.
+    Первичные zip/xlsx — ветка <code>rawdata</code>. Токены доступа в отчёт не входят.
+  </footer>
+  <script>
+    const fmt = n => n == null ? "—" : new Intl.NumberFormat("ru-RU", {maximumFractionDigits: 0}).format(n);
+    const fmt1 = n => n == null ? "—" : new Intl.NumberFormat("ru-RU", {maximumFractionDigits: 1}).format(n);
+    const money = n => n == null ? "—" : new Intl.NumberFormat("ru-RU", {maximumFractionDigits: 0}).format(n) + " ₽";
+    let DATA = null;
+    let charts = {};
+
+    function kpiCard(lbl, val, sub) {
+      return `<div class="kpi"><div class="lbl">${lbl}</div><div class="val">${val}</div><div class="sub">${sub || ""}</div></div>`;
+    }
+    function table(headers, rows) {
+      return `<table><thead><tr>${headers.map((h,i)=>`<th class="${i?"num":""}">${h}</th>`).join("")}</tr></thead>
+        <tbody>${rows.join("")}</tbody></table>`;
+    }
+
+    function filteredSiteYear() {
+      const site = document.getElementById("fSite").value;
+      const year = document.getElementById("fYear").value;
+      return DATA.by_site_year.filter(r => (!site || r.site === site) && (!year || r.year === year));
+    }
+
+    function rollup(rows) {
+      const acc = {orders:0, equipment:0, lines:0, plan:0, fact:0, fact_uso:0, fact_svc:0, avg_order_days:0, n:0};
+      rows.forEach(r => {
+        acc.orders += r.orders; acc.equipment += r.equipment; acc.lines += r.lines;
+        acc.plan += r.plan; acc.fact += r.fact; acc.fact_uso += r.fact_uso; acc.fact_svc += r.fact_svc;
+        acc.avg_order_days += (r.avg_order_days || 0) * (r.orders || 0);
+        acc.n += r.orders || 0;
+      });
+      acc.avg_order_days = acc.n ? acc.avg_order_days / acc.n : 0;
+      acc.exec_pct = acc.plan ? 100 * acc.fact / acc.plan : null;
+      acc.delta = acc.fact - acc.plan;
+      return acc;
+    }
+
+    function renderKpis() {
+      const rows = filteredSiteYear();
+      const k = rows.length ? rollup(rows) : DATA.kpis;
+      document.getElementById("kpiBox").innerHTML = [
+        kpiCard("Заказы ТОРО", fmt(k.orders), "уникальные номера"),
+        kpiCard("Единицы оборудования", fmt(k.equipment), "по наименованию ЕО"),
+        kpiCard("План МТР", money(k.plan), "позиции компонентов"),
+        kpiCard("Факт МТР", money(k.fact), k.exec_pct != null ? "исполнение " + fmt1(k.exec_pct) + "%" : ""),
+        kpiCard("Отклонение факт−план", money(k.delta), "знак «−» = недоосвоение"),
+        kpiCard("Средняя длительность заказа", fmt1(k.avg_order_days) + " сут", "по базисным срокам"),
+        kpiCard("Факт УСО", money(k.fact_uso), "подряд"),
+        kpiCard("Факт услуги", money(k.fact_svc), "прочие услуги"),
+      ].join("");
+    }
+
+    function mkChart(id, cfg) {
+      if (charts[id]) charts[id].destroy();
+      const ctx = document.getElementById(id);
+      charts[id] = new Chart(ctx, cfg);
+    }
+
+    function renderCharts() {
+      const years = [...DATA.by_year].sort((a,b)=>String(a.name).localeCompare(String(b.name)));
+      mkChart("cYear", {
+        type: "bar",
+        data: {
+          labels: years.map(x => x.name),
+          datasets: [
+            { label: "План МТР", data: years.map(x => x.plan), backgroundColor: "#d4a017" },
+            { label: "Факт МТР", data: years.map(x => x.fact), backgroundColor: "#3ec6c9" }
+          ]
+        },
+        options: { plugins: { legend: { labels: { color: "#e8eef6" } } },
+          scales: { x: { ticks: { color: "#93a4b8" } }, y: { ticks: { color: "#93a4b8" } } } }
+      });
+      const fleets = DATA.by_fleet.slice(0, 8);
+      mkChart("cFleet", {
+        type: "doughnut",
+        data: {
+          labels: fleets.map(x => x.name),
+          datasets: [{ data: fleets.map(x => x.plan), backgroundColor: ["#d4a017","#3ec6c9","#6aa8ff","#3dcf8e","#f0a05a","#ef6b6b","#b07cff","#8aa"] }]
+        },
+        options: { plugins: { legend: { labels: { color: "#e8eef6", boxWidth: 12 } } } }
+      });
+      const cls = DATA.by_class;
+      mkChart("cClass", {
+        type: "bar",
+        data: { labels: cls.map(x => x.name), datasets: [{ label: "План", data: cls.map(x => x.plan), backgroundColor: "#6aa8ff" }] },
+        options: { indexAxis: "y", plugins: { legend: { display: false } },
+          scales: { x: { ticks: { color: "#93a4b8" } }, y: { ticks: { color: "#e8eef6" } } } }
+      });
+      const works = DATA.by_work.slice(0, 10);
+      mkChart("cWork", {
+        type: "bar",
+        data: { labels: works.map(x => x.name.slice(0,28)), datasets: [{ label: "Заказы", data: works.map(x => x.orders), backgroundColor: "#f0a05a" }] },
+        options: { indexAxis: "y", plugins: { legend: { display: false } },
+          scales: { x: { ticks: { color: "#93a4b8" } }, y: { ticks: { color: "#e8eef6" } } } }
+      });
+      const months = DATA.by_month;
+      mkChart("cMonth", {
+        type: "line",
+        data: {
+          labels: months.map(x => x.month),
+          datasets: [
+            { label: "План", data: months.map(x => x.plan), borderColor: "#d4a017", tension: .25 },
+            { label: "Факт", data: months.map(x => x.fact), borderColor: "#3ec6c9", tension: .25 }
+          ]
+        },
+        options: { plugins: { legend: { labels: { color: "#e8eef6" } } },
+          scales: { x: { ticks: { color: "#93a4b8", maxRotation: 45 } }, y: { ticks: { color: "#93a4b8" } } } }
+      });
+    }
+
+    function renderTables() {
+      document.getElementById("siteYearTbl").innerHTML = table(
+        ["Площадка","Год","Заказы","ЕО","План МТР","Факт МТР","Исп. %","Ср. срок, сут"],
+        DATA.by_site_year.map(r => `<tr><td>${r.site_name} (${r.site})</td><td class="num">${r.year}</td>
+          <td class="num">${fmt(r.orders)}</td><td class="num">${fmt(r.equipment)}</td>
+          <td class="num">${money(r.plan)}</td><td class="num">${money(r.fact)}</td>
+          <td class="num">${r.exec_pct ?? "—"}</td><td class="num">${fmt1(r.avg_order_days)}</td></tr>`)
+      );
+      document.getElementById("modelTbl").innerHTML = table(
+        ["Модель","Заказы","ЕО","План","Факт"],
+        DATA.by_model.map(r => `<tr><td>${r.name}</td><td class="num">${fmt(r.orders)}</td><td class="num">${fmt(r.equipment)}</td>
+          <td class="num">${money(r.plan)}</td><td class="num">${money(r.fact)}</td></tr>`)
+      );
+      document.getElementById("eqTbl").innerHTML = table(
+        ["Единица оборудования","Площадка","Группа","Модель","Заказы","План","Факт"],
+        DATA.top_equipment.map(r => `<tr><td>${r.name}</td><td>${r.site_name}</td><td>${r.fleet}</td><td>${r.model}</td>
+          <td class="num">${fmt(r.orders)}</td><td class="num">${money(r.plan)}</td><td class="num">${money(r.fact)}</td></tr>`)
+      );
+      document.getElementById("partTbl").innerHTML = table(
+        ["Компонент заказа","Строк","ЕО","План","Факт"],
+        DATA.top_parts.map(r => `<tr><td>${r.name}</td><td class="num">${fmt(r.lines)}</td><td class="num">${fmt(r.equipment)}</td>
+          <td class="num">${money(r.plan)}</td><td class="num">${money(r.fact)}</td></tr>`)
+      );
+
+      const planned = DATA.by_class.find(x => x.name.startsWith("Плановый")) || {plan:0,orders:0};
+      const unpl = DATA.by_class.find(x => x.name.startsWith("Неплановый")) || {plan:0,orders:0};
+      const tot = DATA.kpis.plan || 1;
+      const pShare = 100 * planned.plan / tot;
+      document.getElementById("mixInsights").innerHTML = `
+        <div class="insight ${pShare < 70 ? "warn" : ""}">
+          Оценка доли плановых воздействий по стоимости плана: <b>${fmt1(pShare)}%</b>
+          (world-class ориентир ≥ 80%). Неплановый/аварийный класс: <b>${fmt(unpl.orders)}</b> заказов.
+          Классификация эвристическая по виду работы и тексту заказа SAP.
+        </div>`;
+      document.getElementById("fileNote").innerHTML =
+        "Файлы: " + DATA.files.map(f => `${f.file} → ${f.rows} строк`).join("; ") +
+        ". " + DATA.scope_note;
+    }
+
+    function fillFilters() {
+      const sites = [...new Set(DATA.by_site_year.map(r => r.site))];
+      const years = [...new Set(DATA.by_site_year.map(r => r.year))].sort();
+      const s = document.getElementById("fSite");
+      const y = document.getElementById("fYear");
+      sites.forEach(c => {
+        const name = (DATA.sites && DATA.sites[c]) || c;
+        s.insertAdjacentHTML("beforeend", `<option value="${c}">${name}</option>`);
+      });
+      years.forEach(c => y.insertAdjacentHTML("beforeend", `<option>${c}</option>`));
+      s.onchange = y.onchange = renderKpis;
+    }
+
+    fetch("dashboard_data.json")
+      .then(r => r.json())
+      .then(d => {
+        DATA = d;
+        document.getElementById("genBadge").textContent = "собрано " + d.generated + " · строк " + fmt(d.total_rows);
+        fillFilters();
+        renderKpis();
+        renderCharts();
+        renderTables();
+      })
+      .catch(err => {
+        document.getElementById("kpiBox").innerHTML = `<div class="insight warn">Не удалось загрузить dashboard_data.json: ${err}</div>`;
+      });
+  </script>
+</body>
+</html>

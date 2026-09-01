@@ -102,6 +102,7 @@ button.pri{background:#2a4a3a;border-color:#3dcf8e}
   </div>
   <div class="fg" id="fMethod"><b>Способ</b></div>
   <div class="fg" id="fFleet"><b>Группа МВЗ / парк</b></div>
+  <div class="fg" id="fMaker"><b>Производитель</b></div>
   <div class="fg" id="fModel"><b>Модель оборудования</b></div>
   <div class="fg" id="fWork"><b>Вид работы ТОРО</b></div>
   <p class="note">Фильтры независимы: любой набор сочетается через И. Клик по строке таблицы добавляет фильтр (проваливание).</p>
@@ -190,7 +191,7 @@ let SITE = {};
 let charts = {};
 let selectedEo = null;
 let DET=null; let selectedOrder=null;
-let F = {sites:new Set(), years:new Set(), methods:new Set(), fleets:new Set(), models:new Set(), works:new Set(), mFrom:"", mTo:"", metric:"p"};
+let F = {sites:new Set(), years:new Set(), methods:new Set(), fleets:new Set(), makers:new Set(), models:new Set(), works:new Set(), mFrom:"", mTo:"", metric:"p"};
 function uniq(arr){return [...new Set(arr)].filter(Boolean).sort()}
 function inMonth(m){
   if(!m) return true;
@@ -262,7 +263,7 @@ function initFilters(){
   }
 
   document.getElementById("btnReset").onclick=()=>{
-    F.sites.clear();F.years.clear();F.methods.clear();F.fleets.clear();F.models.clear();F.works.clear();F.mFrom="";F.mTo="";
+    F.sites.clear();F.years.clear();F.methods.clear();F.fleets.clear();F.makers.clear();F.models.clear();F.works.clear();F.mFrom="";F.mTo="";
     document.getElementById("mFrom").value="";document.getElementById("mTo").value="";
     document.querySelectorAll("aside input[type=checkbox]").forEach(i=>i.checked=false);
     render();
@@ -285,30 +286,52 @@ function initFilters(){
   if(fi) fi.onchange=()=>{ if(fi.files && fi.files[0]) loadDetailFile(fi.files[0]); };
 
 }
+function passBaseEq(e){
+  if(F.sites.size && !F.sites.has(e.s)) return false;
+  if(F.years.size && e.y && !F.years.has(String(e.y))) return false;
+  if(F.fleets.size && e.f && !F.fleets.has(e.f)) return false;
+  if(F.makers.size && e.mk && !F.makers.has(e.mk)) return false;
+  if(F.models.size && e.md && !F.models.has(e.md)) return false;
+  return true;
+}
+function makerPool(){
+  const a=(CUBE.eoList||[]).filter(e=>passBaseEq({...e, mk:e.mk, md:undefined}) && e.mk).map(e=>e.mk);
+  const b=(CUBE.ktg||[]).filter(e=>{
+    if(F.sites.size && !F.sites.has(e.s)) return false;
+    if(F.fleets.size && e.f && !F.fleets.has(e.f)) return false;
+    return !!(e.mk);
+  }).map(e=>e.mk);
+  return uniq(a.concat(b));
+}
 function modelPool(){
   const fromEo=(CUBE.eoList||[]).filter(e=>{
     if(F.sites.size && !F.sites.has(e.s)) return false;
     if(F.years.size && !F.years.has(String(e.y))) return false;
     if(F.fleets.size && e.f && !F.fleets.has(e.f)) return false;
+    if(F.makers.size && e.mk && !F.makers.has(e.mk)) return false;
     return !!(e.md);
   }).map(e=>e.md);
   const fromK=(CUBE.ktg||[]).filter(e=>{
     if(F.sites.size && !F.sites.has(e.s)) return false;
     if(F.fleets.size && e.f && !F.fleets.has(e.f)) return false;
+    if(F.makers.size && e.mk && !F.makers.has(e.mk)) return false;
     return !!(e.md);
   }).map(e=>e.md);
   return uniq(fromEo.concat(fromK));
 }
-function refreshModels(){
-  const el=document.getElementById("fModel");
+function fillPool(id, pool, set, label){
+  const el=document.getElementById(id);
   if(!el) return;
-  const pool=modelPool();
-  [...F.models].forEach(m=>{ if(!pool.includes(m)) F.models.delete(m); });
-  boxes(el, pool.slice(0,80), F.models);
-  const note=el.querySelector(".model-note")||document.createElement("div");
-  note.className="note model-note";
-  note.textContent=pool.length? ("моделей в срезе: "+pool.length) : "нет моделей для выбранных фильтров";
+  [...set].forEach(v=>{ if(!pool.includes(v)) set.delete(v); });
+  boxes(el, pool.slice(0,80), set);
+  const note=el.querySelector(".pool-note")||document.createElement("div");
+  note.className="note pool-note";
+  note.textContent=pool.length? (label+" в срезе: "+pool.length) : "нет значений для выбранных фильтров";
   el.appendChild(note);
+}
+function refreshModels(){
+  fillPool("fMaker", makerPool(), F.makers, "производителей");
+  fillPool("fModel", modelPool(), F.models, "моделей");
 }
 function drill(kind, value){
   if(!value) return;
@@ -325,6 +348,7 @@ function crumb(){
   if(F.mFrom||F.mTo) bits.push("период: "+(F.mFrom||"…")+" — "+(F.mTo||"…"));
   if(F.methods.size) bits.push("способ: "+[...F.methods].join(", "));
   if(F.fleets.size) bits.push("парк: "+[...F.fleets].join(", "));
+  if(F.makers.size) bits.push("производитель: "+[...F.makers].join(", "));
   if(F.models.size) bits.push("модель: "+[...F.models].join(", "));
   if(F.works.size) bits.push("работа: "+[...F.works].join(", "));
   document.getElementById("crumb").textContent = bits.length? ("Фильтр: "+bits.join(" · ")) : "Контур: все данные. Отметьте ОДИН год слева — KPI и подрядчики пересчитаются.";
@@ -460,6 +484,7 @@ function passEo(e){
   if(F.sites.size && !F.sites.has(e.s)) return false;
   if(F.years.size && !F.years.has(String(e.y))) return false;
   if(F.fleets.size && e.f && !F.fleets.has(e.f)) return false;
+  if(F.makers.size && e.mk && !F.makers.has(e.mk)) return false;
   if(F.models.size && e.md && !F.models.has(e.md)) return false;
   return true;
 }
@@ -468,7 +493,8 @@ function passOrd(r){
   if(F.years.size && !F.years.has(String(r.y))) return false;
   if(F.methods.size && !F.methods.has(r.u)) return false;
   if(F.fleets.size && r.f && !F.fleets.has(r.f)) return false;
-  if(F.models.size && r.md && !F.models.has(r.md)) return false;
+  if(F.makers.size && r.mk && !F.makers.has(r.mk)) return false;
+    if(F.models.size && r.md && !F.models.has(r.md)) return false;
   if(F.works.size && r.w && !F.works.has(r.w)) return false;
   if(!inMonth(r.m)) return false;
   return true;
@@ -617,10 +643,15 @@ function renderOrders(){
   const q=((document.getElementById("qOrd")||{}).value||"").toLowerCase();
   let rows=DET.rows;
   if(F.methods.size) rows=rows.filter(r=>F.methods.has(r.u) || (F.methods.has("Хозспособ") && r.u==="ХС") || (F.methods.has("Комбинированный") && r.u==="Комб"));
-  if(F.models.size){
+  if(F.models.size || F.makers.size){
     const names=new Set();
-    (CUBE.eoList||[]).forEach(e=>{ if(e.md && F.models.has(e.md)) names.add(eoKey(e.e)); });
-    (CUBE.ktg||[]).forEach(e=>{ if(e.md && F.models.has(e.md)) names.add(eoKey(e.e)); });
+    const take=e=>{
+      if(F.models.size && e.md && !F.models.has(e.md)) return;
+      if(F.makers.size && e.mk && !F.makers.has(e.mk)) return;
+      if(e.e) names.add(eoKey(e.e));
+    };
+    (CUBE.eoList||[]).forEach(take);
+    (CUBE.ktg||[]).forEach(take);
     rows=rows.filter(r=>names.has(eoKey(r.e)));
   }
 
@@ -757,11 +788,11 @@ function renderKtg(){
   tbl("ktgModel", agg("md"), "Модель");
   const list=rows.slice().sort((a,b)=>(ktgAvg(a,"am",idxs)||0)-(ktgAvg(b,"am",idxs)||0)).slice(0,600);
   const tblEl=document.getElementById("ktgTbl");
-  if(tblEl) tblEl.innerHTML=`<h3>ЕО</h3><table><thead><tr><th>ЕО</th><th>Площадка</th><th>МВЗ</th><th>Парк</th><th>Модель</th><th class="n">КТГ план</th><th class="n">КТГ факт</th><th class="n">Δ п.п.</th></tr></thead><tbody>${
+  if(tblEl) tblEl.innerHTML=`<h3>ЕО</h3><table><thead><tr><th>ЕО</th><th>Площадка</th><th>МВЗ</th><th>Парк</th><th>Производитель</th><th>Модель</th><th class="n">КТГ план</th><th class="n">КТГ факт</th><th class="n">Δ п.п.</th></tr></thead><tbody>${
     list.map(r=>{
       const pv=ktgAvg(r,"pm",idxs), av=ktgAvg(r,"am",idxs);
       const d=(pv!=null&&av!=null)?(100*(av-pv)).toFixed(1):"—";
-      return `<tr class="clk" onclick='pickEo(${JSON.stringify({e:r.e,s:r.s,y:""})})'><td>${r.e}</td><td>${SITE[r.s]||r.s}</td><td>${r.mvz||""}</td><td>${r.f||""}</td><td>${r.md||""}</td><td class="n">${pct(pv)}</td><td class="n">${pct(av)}</td><td class="n">${d}</td></tr>`;
+      return `<tr class="clk" onclick='pickEo(${JSON.stringify({e:r.e,s:r.s,y:""})})'><td>${r.e}</td><td>${SITE[r.s]||r.s}</td><td>${r.mvz||""}</td><td>${r.f||""}</td><td>${r.mk||""}</td><td>${r.md||""}</td><td class="n">${pct(pv)}</td><td class="n">${pct(av)}</td><td class="n">${d}</td></tr>`;
     }).join("")
   }</tbody></table>`;
 }
@@ -805,7 +836,10 @@ function boot(cube){
   fetch("ktg.json").then(r=>r.ok?r.json():null).then(d=>{
     if(!d||!d.eo) return;
     CUBE.ktg=d.eo; CUBE.ktgMonths=d.months||[];
-    renderKtg(); renderCharts(filteredCombo());
+    CUBE.mfrByEo={};
+    (CUBE.ktg||[]).forEach(r=>{ if(r.mk) CUBE.mfrByEo[eoKey(r.e)]=r.mk; });
+    (CUBE.eoList||[]).forEach(e=>{ if(!e.mk) e.mk=CUBE.mfrByEo[eoKey(e.e)]||""; });
+    renderKtg(); renderCharts(filteredCombo()); refreshModels();
   }).catch(()=>{});
 }
 if(window.EMBEDDED_CUBE) boot(window.EMBEDDED_CUBE);

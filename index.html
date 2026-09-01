@@ -168,10 +168,16 @@ button.pri{background:#2a4a3a;border-color:#3dcf8e}
     </div>
   </section>
   <section id="tab-ktg" hidden>
-    <p class="note">КТГ — коэффициент технической готовности (план/факт, 0–1). Источник: ALL КТГ 31.08.2026, период 2023–2026. Фильтры площадки и года слева применяются к таблице.</p>
-    <input id="qKtg" placeholder="поиск ЕО / парка / модели" style="width:min(420px,100%);margin-bottom:8px">
+    <p class="note">КТГ план/факт по месяцам, МВЗ, парку и модели. Фильтры площадки и года слева. Источник: ALL КТГ 31.08.2026 (2023–2026).</p>
+    <input id="qKtg" placeholder="поиск ЕО / МВЗ / парка / модели" style="width:min(480px,100%);margin-bottom:8px">
     <div class="kpi" id="ktgKpi"></div>
-    <div class="card wrap" id="ktgTbl"></div>
+    <div class="card"><h3>КТГ план / факт по месяцам</h3><canvas id="cKtgMonth"></canvas></div>
+    <div class="grid" style="margin-top:10px">
+      <div class="card wrap"><h3>По паркам</h3><div id="ktgFleet"></div></div>
+      <div class="card wrap"><h3>По МВЗ</h3><div id="ktgMvz"></div></div>
+      <div class="card wrap"><h3>По моделям</h3><div id="ktgModel"></div></div>
+    </div>
+    <div class="card wrap" style="margin-top:10px" id="ktgTbl"></div>
   </section>
 </main>
 </div>
@@ -638,36 +644,86 @@ function pickOrder(id){
 }
 
 
-function renderKtg(){
+function ktgRows(){
   const list=CUBE.ktg||[];
   const q=((document.getElementById("qKtg")||{}).value||"").toLowerCase();
-  const year=F.years.size===1 ? [...F.years][0] : null;
-  let rows=list.filter(r=>{
+  return list.filter(r=>{
     if(F.sites.size && !F.sites.has(r.s)) return false;
-    if(q && !(r.e+" "+(r.f||"")+" "+(r.md||"")).toLowerCase().includes(q)) return false;
+    if(q && !(r.e+" "+(r.f||"")+" "+(r.md||"")+" "+(r.mvz||"")).toLowerCase().includes(q)) return false;
     return true;
   });
-  const valP=r=> year && r.yp && r.yp[year]!=null ? r.yp[year] : r.p;
-  const valA=r=> year && r.ya && r.ya[year]!=null ? r.ya[year] : r.a;
+}
+function ktgMonthIdx(){
+  const months=CUBE.ktgMonths||[];
+  if(!F.years.size) return months.map((_,i)=>i);
+  return months.map((m,i)=>[m,i]).filter(([m])=>F.years.has(String(m).slice(0,4))).map(x=>x[1]);
+}
+function mean(a){ return a.length? a.reduce((s,x)=>s+x,0)/a.length : null; }
+function ktgAvg(r, key, idxs){
+  const arr=r[key];
+  if(!arr||!arr.length){
+    if(key==="pm") return r.p; if(key==="am") return r.a;
+    return null;
+  }
+  const vs=idxs.map(i=>arr[i]).filter(v=>v>0);
+  return mean(vs);
+}
+function renderKtg(){
+  const rows=ktgRows();
+  const idxs=ktgMonthIdx();
+  const months=CUBE.ktgMonths||[];
   const pct=v=> v==null? "—" : (100*v).toFixed(1)+"%";
-  const withP=rows.map(valP).filter(v=>v!=null && v>0);
-  const withA=rows.map(valA).filter(v=>v!=null && v>0);
-  const avg=a=>a.length? a.reduce((s,x)=>s+x,0)/a.length : null;
+  const ps=rows.map(r=>ktgAvg(r,"pm",idxs)).filter(v=>v!=null);
+  const as=rows.map(r=>ktgAvg(r,"am",idxs)).filter(v=>v!=null);
   const el=document.getElementById("ktgKpi");
   if(el) el.innerHTML=[
-    ["ЕО в КТГ", fmt(rows.length), year?("год "+year):"2023–2026"],
-    ["КТГ план ср.", pct(avg(withP)), ""],
-    ["КТГ факт ср.", pct(avg(withA)), ""],
-    ["Отклонение", (avg(withP)!=null && avg(withA)!=null)? ((avg(withA)-avg(withP))*100).toFixed(1)+" п.п." : "—", "факт − план"]
+    ["ЕО в КТГ", fmt(rows.length), F.years.size?("годы "+[...F.years].sort().join(", ")):"2023–2026"],
+    ["КТГ план ср.", pct(mean(ps)), ""],
+    ["КТГ факт ср.", pct(mean(as)), ""],
+    ["Отклонение", (mean(ps)!=null && mean(as)!=null)? ((mean(as)-mean(ps))*100).toFixed(1)+" п.п." : "—", "факт − план"]
   ].map(([l,v,s])=>`<div class="k"><div class="l">${l}</div><div class="v">${v}</div><div class="l">${s||""}</div></div>`).join("");
-  rows=rows.slice().sort((a,b)=>(valA(a)||0)-(valA(b)||0)).slice(0,800);
-  const tbl=document.getElementById("ktgTbl");
-  if(!tbl) return;
-  tbl.innerHTML=`<table><thead><tr><th>ЕО</th><th>Площадка</th><th>Парк / класс</th><th>Модель</th><th class="n">КТГ план</th><th class="n">КТГ факт</th><th class="n">Δ п.п.</th></tr></thead><tbody>${
-    rows.map(r=>{
-      const p=valP(r), a=valA(r);
-      const d=(p!=null && a!=null)? (100*(a-p)).toFixed(1) : "—";
-      return `<tr class="clk" onclick='pickEo(${JSON.stringify({e:r.e,s:r.s,y:year||""})})'><td>${r.e}</td><td>${SITE[r.s]||r.s}</td><td>${r.f||""}</td><td>${r.md||""}</td><td class="n">${pct(p)}</td><td class="n">${pct(a)}</td><td class="n">${d}</td></tr>`;
+  const pSeries=[], aSeries=[], labels=[];
+  idxs.forEach(i=>{
+    if(!months[i]) return;
+    const pv=rows.map(r=>r.pm&&r.pm[i]).filter(v=>v>0);
+    const av=rows.map(r=>r.am&&r.am[i]).filter(v=>v>0);
+    if(!pv.length && !av.length) return;
+    labels.push(months[i]);
+    pSeries.push(pv.length? +(100*mean(pv)).toFixed(2): null);
+    aSeries.push(av.length? +(100*mean(av)).toFixed(2): null);
+  });
+  mkChart("cKtgMonth",{type:"line", data:{labels, datasets:[
+    {label:"КТГ план %", data:pSeries, borderColor:"#d4a017", backgroundColor:"#d4a01733", tension:.2, spanGaps:true},
+    {label:"КТГ факт %", data:aSeries, borderColor:"#3dcf8e", backgroundColor:"#3dcf8e33", tension:.2, spanGaps:true}
+  ]}, options:{plugins:{legend:{labels:{color:"#e8eef6"}}}, scales:{x:{ticks:{color:"#93a4b8", maxRotation:60}}, y:{ticks:{color:"#93a4b8"}, suggestedMin:70, suggestedMax:100}}}});
+  function agg(key){
+    const m={};
+    rows.forEach(r=>{
+      const k=r[key]||"—";
+      if(!m[k]) m[k]={name:k,p:[],a:[],n:0};
+      const pv=ktgAvg(r,"pm",idxs), av=ktgAvg(r,"am",idxs);
+      if(pv!=null) m[k].p.push(pv);
+      if(av!=null) m[k].a.push(av);
+      m[k].n++;
+    });
+    return Object.values(m).map(x=>({name:x.name,n:x.n,p:mean(x.p),a:mean(x.a),d:(mean(x.p)!=null&&mean(x.a)!=null)?(mean(x.a)-mean(x.p)):null})).sort((a,b)=>(a.a||0)-(b.a||0));
+  }
+  function tbl(id, data, title){
+    const el=document.getElementById(id); if(!el) return;
+    el.innerHTML=`<table><thead><tr><th>${title}</th><th class="n">ЕО</th><th class="n">КТГ план</th><th class="n">КТГ факт</th><th class="n">Δ п.п.</th></tr></thead><tbody>${
+      data.slice(0,80).map(x=>`<tr><td>${x.name}</td><td class="n">${fmt(x.n)}</td><td class="n">${pct(x.p)}</td><td class="n">${pct(x.a)}</td><td class="n">${x.d==null?"—":(100*x.d).toFixed(1)}</td></tr>`).join("")
+    }</tbody></table>`;
+  }
+  tbl("ktgFleet", agg("f"), "Парк / класс");
+  tbl("ktgMvz", agg("mvz"), "МВЗ");
+  tbl("ktgModel", agg("md"), "Модель");
+  const list=rows.slice().sort((a,b)=>(ktgAvg(a,"am",idxs)||0)-(ktgAvg(b,"am",idxs)||0)).slice(0,600);
+  const tblEl=document.getElementById("ktgTbl");
+  if(tblEl) tblEl.innerHTML=`<h3>ЕО</h3><table><thead><tr><th>ЕО</th><th>Площадка</th><th>МВЗ</th><th>Парк</th><th>Модель</th><th class="n">КТГ план</th><th class="n">КТГ факт</th><th class="n">Δ п.п.</th></tr></thead><tbody>${
+    list.map(r=>{
+      const pv=ktgAvg(r,"pm",idxs), av=ktgAvg(r,"am",idxs);
+      const d=(pv!=null&&av!=null)?(100*(av-pv)).toFixed(1):"—";
+      return `<tr class="clk" onclick='pickEo(${JSON.stringify({e:r.e,s:r.s,y:""})})'><td>${r.e}</td><td>${SITE[r.s]||r.s}</td><td>${r.mvz||""}</td><td>${r.f||""}</td><td>${r.md||""}</td><td class="n">${pct(pv)}</td><td class="n">${pct(av)}</td><td class="n">${d}</td></tr>`;
     }).join("")
   }</tbody></table>`;
 }
@@ -708,6 +764,11 @@ function boot(cube){
   cube.orders = unpackOrders(cube);
   cube.mtrList = unpackMtr(cube);
   initFilters(); render();
+  fetch("ktg.json").then(r=>r.ok?r.json():null).then(d=>{
+    if(!d||!d.eo) return;
+    CUBE.ktg=d.eo; CUBE.ktgMonths=d.months||[];
+    renderKtg(); renderCharts(filteredCombo());
+  }).catch(()=>{});
 }
 if(window.EMBEDDED_CUBE) boot(window.EMBEDDED_CUBE);
 else fetch("cube.json").then(r=>r.json()).then(boot).catch(e=>{ document.getElementById("kpis").innerHTML=`<div class="k">${e}</div>`; });

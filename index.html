@@ -2,7 +2,9 @@
 <html lang="ru">
 <head>
 <meta charset="UTF-8"/>
-<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"/>
+<meta name="theme-color" content="#0b0f14"/>
+<meta name="mobile-web-app-capable" content="yes"/>
 <title>TOPO · Интерактивный анализ ТОиР · SAP PM-M06</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
 <style>
@@ -42,7 +44,36 @@ button.pri{background:#2a4a3a;border-color:#3dcf8e}
 .tabs button.on{border-color:var(--gold);color:var(--gold)}
 .note{color:var(--muted);font-size:12px;line-height:1.45}
 .pill{display:inline-block;padding:2px 8px;border:1px solid var(--line);border-radius:99px;font-size:11px;margin-right:4px}
-@media(max-width:900px){.layout{grid-template-columns:1fr}}
+#btnFilters{display:none}
+.tabs{position:sticky;top:0;z-index:5;background:var(--bg);padding:6px 0}
+@media(max-width:900px){
+  header{padding:12px 12px 8px}
+  header h1{font-size:17px;line-height:1.25}
+  header p{font-size:12px}
+  .layout{grid-template-columns:1fr}
+  aside{position:fixed;inset:0 auto 0 0;width:min(86vw,340px);max-height:100vh;z-index:40;
+        transform:translateX(-105%);transition:transform .2s ease;box-shadow:none}
+  body.filters-on aside{transform:none;box-shadow:8px 0 24px #0008}
+  body.filters-on::after{content:"";position:fixed;inset:0;background:#0006;z-index:30}
+  #btnFilters{display:inline-flex;align-items:center;gap:6px;margin:8px 0;padding:10px 12px;font-size:14px}
+  main{padding:10px 10px 80px}
+  .kpi{grid-template-columns:repeat(2,1fr);gap:6px}
+  .k{padding:8px}
+  .k .v{font-size:15px}
+  .grid{grid-template-columns:1fr}
+  canvas{max-height:200px}
+  .tabs{flex-wrap:nowrap;overflow-x:auto;-webkit-overflow-scrolling:touch;gap:4px}
+  .tabs button{flex:0 0 auto;padding:10px 12px;font-size:13px}
+  select,input,button{font-size:16px;padding:10px 10px;min-height:44px}
+  label.chk{min-height:36px;font-size:14px}
+  table{font-size:11px}
+  th,td{padding:8px 6px}
+  .wrap{max-height:none}
+  .eq-grid,.grid > .card.wrap{max-height:none}
+}
+@media(max-width:420px){
+  .kpi{grid-template-columns:1fr}
+}
 </style>
 </head>
 <body>
@@ -75,6 +106,7 @@ button.pri{background:#2a4a3a;border-color:#3dcf8e}
   <p class="note">Фильтры независимы: любой набор сочетается через И. Клик по строке таблицы добавляет фильтр (проваливание).</p>
 </aside>
 <main>
+  <button type="button" id="btnFilters">Фильтры</button>
   <div class="crumb" id="crumb">Контур: все данные</div>
   <div class="kpi" id="kpis"></div>
   <div class="tabs">
@@ -212,6 +244,16 @@ function initFilters(){
   document.getElementById("mFrom").onchange=e=>{F.mFrom=e.target.value;render()};
   document.getElementById("mTo").onchange=e=>{F.mTo=e.target.value;render()};
   document.getElementById("metric").onchange=e=>{F.metric=e.target.value;render()};
+  const bf=document.getElementById("btnFilters");
+  if(bf){
+    bf.onclick=()=>document.body.classList.toggle("filters-on");
+    document.addEventListener("click",e=>{
+      if(!document.body.classList.contains("filters-on")) return;
+      if(e.target.closest("aside") || e.target.id==="btnFilters") return;
+      document.body.classList.remove("filters-on");
+    });
+  }
+
   document.getElementById("btnReset").onclick=()=>{
     F.sites.clear();F.years.clear();F.methods.clear();F.fleets.clear();F.works.clear();F.mFrom="";F.mTo="";
     document.getElementById("mFrom").value="";document.getElementById("mTo").value="";

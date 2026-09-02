@@ -153,10 +153,13 @@ select{cursor:pointer}
 .chip.ghost{background:none;border-style:dashed;color:var(--ink-4)}
 .quickfind{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px;margin:0 0 12px;align-items:end}
 .quickfind label{display:flex;flex-direction:column;gap:4px;font-size:11px;color:var(--ink-3)}
-.quickfind input{width:100%;padding:8px 10px;border-radius:8px;border:var(--hair);background:var(--surface);color:var(--ink);font-size:14px}
+.quickfind{padding:10px 12px;background:var(--surface);border:var(--hair);border-radius:var(--radius-lg);box-shadow:var(--shadow-sm)}
+.quickfind label{letter-spacing:.04em;text-transform:uppercase;font-weight:600}
+.quickfind input{width:100%;padding:7px 9px;border-radius:var(--radius);border:var(--hair);background:var(--surface-2);color:var(--ink);font-size:13px}
+.quickfind input:hover{border-color:var(--line-2)}
 .quickfind .hits{grid-column:1/-1;display:flex;flex-wrap:wrap;gap:6px}
-.quickfind .hit{cursor:pointer;padding:4px 8px;border-radius:99px;border:var(--hair);background:var(--surface-2);font-size:12px}
-.quickfind .hit:hover{border-color:var(--accent)}
+.quickfind .hit{cursor:pointer;padding:3px 9px;border-radius:99px;border:var(--hair);background:var(--surface-2);font-size:11.5px;color:var(--ink-2)}
+.quickfind .hit:hover{border-color:var(--accent);color:var(--accent)}
 
 /* ---------- KPI ---------- */
 .kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(168px,1fr));gap:10px;margin-bottom:14px}
@@ -1053,7 +1056,8 @@ function buildKtg(src, months) {
   M.ktgYears = uniq((months || []).map(m => String(m).slice(0, 4))).sort();
   /* производитель для ЕО из справочника КТГ */
   M.mkByEo = new Map();
-  M.ktg.forEach(r => { if (r.mk) M.mkByEo.set(r.k, r.mk); });
+  M.gnByEo = new Map();
+  M.ktg.forEach(r => { if (r.mk) M.mkByEo.set(r.k, r.mk); if (r.gn) M.gnByEo.set(r.k, String(r.gn)); });
 }
 
 /* =====================================================================
@@ -1287,9 +1291,11 @@ function buildSidebar() {
     const set = def.set();
     const items = def.items();
     let html = "";
-    if (def.all || key === "garages") {
-      const allOn = items.length && items.every(v => set.has(v));
-      html += `<label class="chk"><input type="checkbox" data-fall="${key}"${allOn ? " checked" : ""}><span class="txt"><b>Все</b></span><span class="sub">${items.length}</span></label>`;
+    if (def.all) {
+      /* «Все» = снять ограничение, а не отметить каждое значение по
+         отдельности: гаражных номеров 833, и поштучный выбор превращал
+         строку контекста в несколько сотен чипов. */
+      html += `<label class="chk"><input type="checkbox" data-fall="${key}"${set.size ? "" : " checked"}><span class="txt"><b>Все</b><span class="fnote" style="padding:0"> — без ограничения</span></span><span class="sub">${items.length}</span></label>`;
     }
     if (def.search && items.length > 14) html += `<input type="search" class="fsearch" placeholder="поиск…" data-fq="${key}" value="${esc(FQ[key] || "")}">`;
     const q = (FQ[key] || "").toLowerCase();
@@ -1314,7 +1320,11 @@ function countFilters() {
 function renderChips() {
   const c = document.getElementById("chips");
   const bits = [];
-  const add = (label, set, fmt) => set.forEach(v => bits.push({ label, v, set, txt: fmt ? fmt(v) : v }));
+  const groups = [];
+  const add = (label, set, fmt) => {
+    if (set.size > 3) { groups.push({ label, set, n: set.size }); return; }
+    set.forEach(v => bits.push({ label, v, set, txt: fmt ? fmt(v) : v }));
+  };
   add("площадка", F.sites, v => M.sites[v] || v);
   add("год", F.years);
   add("способ", F.methods);
@@ -1325,12 +1335,13 @@ function renderChips() {
   add("модель", F.models);
   add("гараж", F.garages);
   let html = bits.map((b, i) => `<span class="chip"><span>${esc(b.label)}</span><b>${esc(trunc(b.txt, 34))}</b><span class="x" data-chip="${i}" title="Убрать">×</span></span>`).join("");
+  html += groups.map((g, i) => `<span class="chip" title="${esc([...g.set].slice(0, 40).join(", "))}"><span>${esc(g.label)}</span><b>${g.n} значений</b><span class="x" data-chipg="${i}" title="Снять весь фильтр">×</span></span>`).join("");
   if (F.mFrom || F.mTo) html += `<span class="chip"><span>период</span><b>${esc(F.mFrom || "…")} — ${esc(F.mTo || "…")}</b><span class="x" data-chip="m" title="Убрать">×</span></span>`;
   if (OPT.comparable) html += `<span class="chip"><span>контур</span><b>только сопоставимые годы</b></span>`;
   if (OPT.closed) html += `<span class="chip"><span>период</span><b>только закрытые годы</b></span>`;
   if (!html) html = `<span class="chip ghost">Фильтры не заданы — показан весь контур ${num(M.combo.length)} срезов</span>`;
   c.innerHTML = html;
-  c.__bits = bits;
+  c.__bits = bits; c.__groups = groups;
 }
 function renderPerimeter() {
   const host = document.getElementById("perimeter");
@@ -1719,7 +1730,7 @@ function linkRows() {
     if (!na) continue;
     const fact = c.a + c.uf, plan = c.p + c.up;
     out.push({
-      e: r.e, s: r.s, site: M.sites[r.s] || r.s, cls: r.f, fg: r.fg, md: r.md, mk: r.mk, mvz: r.mvz,
+      e: r.e, s: r.s, gn: r.gn || "", site: M.sites[r.s] || r.s, cls: r.f, fg: r.fg, md: r.md, mk: r.mk, mvz: r.mvz,
       ktgA: 100 * sa / na, ktgP: np ? 100 * sp / np : null, dK: np ? 100 * (sa / na - sp / np) : null,
       months: na, avail: sa, plan, fact, o: c.o,
       cpm: sa > 0 ? fact / sa : null, exec: plan ? 100 * fact / plan : null
@@ -1790,6 +1801,7 @@ PANES.link = function (host) {
     id: "tLink", sort: "fact", rows: L, maxH: 460, onRow: r => { SEL.eo = { e: r.e, s: r.s }; setTab("eo"); },
     cols: [
       { k: "e", t: "Единица оборудования", cls: "name" },
+      { k: "gn", t: "Гараж", cls: "dim", fmt: v => v || "—" },
       { k: "site", t: "Площадка", cls: "dim" },
       { k: "cls", t: "Класс", cls: "dim" },
       { k: "md", t: "Модель", cls: "dim" },
@@ -1977,13 +1989,18 @@ PANES.mtr = function (host) {
 
   const lines = M.mtrList.filter(r => (!F.sites.size || F.sites.has(r.s)) && YS.has(String(r.y)))
     .filter(r => !SEL.eo || (eoKey(r.e) === eoKey(SEL.eo.e) && (!SEL.eo.s || r.s === SEL.eo.s)))
-    .map(r => ({ c: r.c, e: r.e, y: r.y, g: r.g, qp: r.qp, qf: r.qf, p: r.p, a: r.a, up: r.qp ? r.p / r.qp : null, ua: r.qf ? r.a / r.qf : null, dev: (r.qp && r.qf) ? 100 * ((r.a / r.qf) / (r.p / r.qp) - 1) : null }))
+    .filter(r => lineMatchesMtr(r.c))
+    .map(r => ({ c: r.c, oem: oemOf(r.c), e: r.e, y: r.y, g: r.g, qp: r.qp, qf: r.qf, p: r.p, a: r.a, up: r.qp ? r.p / r.qp : null, ua: r.qf ? r.a / r.qf : null, dev: (r.qp && r.qf) ? 100 * ((r.a / r.qf) / (r.p / r.qp) - 1) : null }))
     .sort((a, b) => (b.p + b.a) - (a.p + a.a));
 
   host.innerHTML =
     `<div class="kpis" id="mtrKpi"></div>` +
     callout("info", `Витрина позиций МТР охватывает <b>${shortR(totP)}</b> плана — это ${pct(comboP ? 100 * totP / comboP : 0)} плана МТР текущего среза. Остальное приходится на позиции вне ${num(M.mat.length)} сохранённых срезов. Суммы ниже — по покрытой части, а не по всему плану.`) +
-    `<div class="grid">${card("ABC-разложение позиций МТР", "20 крупнейших позиций по плану", "cAbc", { foot: "Группа A — позиции, дающие первые 80% плана; B — до 95%; C — длинный хвост. Планирование запаса и переговоры о цене имеют смысл прежде всего в группе A." })}</div>
+    `<div class="quickfind" style="margin-bottom:12px">
+      <label>ЕКМТР<input type="search" id="qMtr" placeholder="наименование компонента" value="${esc(QMTR)}"></label>
+      <label>Каталожный №<input type="search" id="qCat" placeholder="номер детали производителя" value="${esc(QCAT)}"></label>
+     </div>
+     <div class="grid">${card("ABC-разложение позиций МТР", "20 крупнейших позиций по плану", "cAbc", { foot: "Группа A — позиции, дающие первые 80% плана; B — до 95%; C — длинный хвост. Планирование запаса и переговоры о цене имеют смысл прежде всего в группе A." })}</div>
      <div class="grid">${card("Позиции МТР", "агрегировано по наименованию в текущем срезе", "tMat", { tools: dlBtn("tMat") })}</div>
      <div class="grid">${card(SEL.eo ? "Компоненты ЕКМТР: " + SEL.eo.e : "Компоненты ЕКМТР по единицам оборудования", "план и факт количества и расчётной цены", "tLines", { tools: dlBtn("tLines"), foot: "Расчётная цена = стоимость / количество. Расхождение цены план→факт показывает, где отклонение вызвано ценой, а не объёмом." })}</div>
      <div class="grid">${card("Глобальный каталог ЕКМТР", "1 800 крупнейших компонентов", "tCat", { tools: dlBtn("tCat") })}</div>`;
@@ -2013,6 +2030,7 @@ PANES.mtr = function (host) {
     id: "tLines", sort: "p", rows: lines, maxH: 440, limit: 500,
     cols: [
       { k: "c", t: "Компонент", cls: "name" },
+      { k: "oem", t: "Каталожный №", cls: "dim", fmt: v => v ? `<code style="font-size:11px">${esc(v)}</code>` : "—" },
       { k: "e", t: "Единица оборудования", cls: "name dim" },
       { k: "y", t: "Год", cls: "dim" },
       { k: "g", t: "Группа", cls: "dim name" },
@@ -2060,6 +2078,7 @@ PANES.eo = function (host) {
     return {
       e: x.e, k: x.k, s: [...x.sites][0], site: [...x.sites].map(s => M.sites[s] || s).join(", "),
       years: [...x.years].sort().join(", "), f: x.f || "", md: x.md || "", mk: (kr && kr.mk) || M.mkByEo.get(x.k) || "",
+      gn: (kr && kr.gn) || M.gnByEo.get(x.k) || "",
       o: x.o, p: x.p, a: x.a, up: x.up, uf: x.uf, tp: x.p + x.up, ta: x.a + x.uf,
       ex: (x.p + x.up) ? 100 * (x.a + x.uf) / (x.p + x.up) : null, ktg: a
     };
@@ -2088,6 +2107,7 @@ PANES.eo = function (host) {
     onRow: r => { SEL.eo = (sel && r.k === sel.k) ? null : { e: r.e, s: r.s }; renderTab(); },
     cols: [
       { k: "e", t: "Единица оборудования", cls: "name" },
+      { k: "gn", t: "Гараж", cls: "dim", fmt: v => v || "—", hint: "Гаражный номер — как единицу называют в цехе" },
       { k: "site", t: "Площадка", cls: "dim" }, { k: "f", t: "Парк", cls: "dim" },
       { k: "mk", t: "Производитель", cls: "dim" }, { k: "md", t: "Модель", cls: "dim" },
       { k: "years", t: "Годы", cls: "dim" },
@@ -2177,17 +2197,33 @@ function loadDetail(st, onDone) {
     .catch(e => { D.detErr = String(e && e.message || e); D.detLoading = false; if (TAB === "ord") renderTab(); });
 }
 
+/* Каталожные номера производителей: индекс из oem_idx.json.
+   Строим карты один раз при загрузке и кэшируем результат запроса —
+   поиск по номеру вызывается на каждую строку компонента, а строк в
+   полной детализации до 92 тысяч: перебор 18 247 номеров внутри этого
+   цикла означал бы сотни миллионов сравнений на каждое нажатие клавиши. */
+let OEMBYC = new Map();   // наименование компонента → каталожный номер
+function buildOemIndex() {
+  OEMBYC = new Map();
+  const oem = OEMIDX.oem || [], cs = OEMIDX.c || [];
+  for (let i = 0; i < oem.length; i++) if (!OEMBYC.has(cs[i])) OEMBYC.set(cs[i], oem[i]);
+  CATCACHE.q = null; CATCACHE.set = null;
+}
+const oemOf = c => OEMBYC.get(String(c || "")) || "";
+const CATCACHE = { q: null, set: null };
 function compsForCatalog(q) {
   q = (q || "").trim().toLowerCase();
   if (!q) return null;
+  if (CATCACHE.q === q) return CATCACHE.set;
   const s = new Set();
   const oem = OEMIDX.oem || [], cs = OEMIDX.c || [];
   for (let i = 0; i < oem.length; i++) {
-    if (String(oem[i]).toLowerCase().includes(q) || String(cs[i]).toLowerCase().includes(q)) s.add(cs[i]);
+    if (String(oem[i]).toLowerCase().includes(q)) s.add(cs[i]);
   }
   (M.mtrList || []).forEach(r => {
-    if ((r.c || "").toLowerCase().includes(q) || (r.g || "").toLowerCase().includes(q)) s.add(r.c);
+    if ((r.g || "").toLowerCase().includes(q)) s.add(r.c);
   });
+  CATCACHE.q = q; CATCACHE.set = s;
   return s;
 }
 function lineMatchesMtr(c) {
@@ -2198,8 +2234,7 @@ function lineMatchesMtr(c) {
     const q = QCAT.toLowerCase();
     if (low.includes(q)) return true;
     const set = compsForCatalog(QCAT);
-    if (set && set.size && ![...set].some(n => n === name || low.includes(String(n).toLowerCase()))) return false;
-    if (set && !set.size && !low.includes(q)) return false;
+    if (!set || !set.has(name)) return false;
   }
   return true;
 }
@@ -2217,7 +2252,7 @@ PANES.ord = function (host) {
       <label>Заказ / ЕО<input type="search" id="qOrd" placeholder="номер заказа или единица" value="${esc(QORD)}"></label>
       <label>ЕКМТР<input type="search" id="qMtr" placeholder="наименование компонента" value="${esc(QMTR)}"></label>
       <label>Каталожный №<input type="search" id="qCat" placeholder="номер детали производителя" value="${esc(QCAT)}"></label>
-    </div>`
+     </div>
      <div class="kpis" id="ordKpi"></div>
      <div class="grid g2">
        ${card("Заказы", "клик раскрывает компоненты", "tOrd", { tools: dlBtn("tOrd") })}
@@ -2262,43 +2297,54 @@ PANES.ord = function (host) {
     }
     orders = [...acc.values()];
   }
+  let eoLevelComps = false, linesInSlice = 0;
   if (source === "cube") {
+    /* Во встроенном срезе номер заказа у позиции ЕКМТР не сохранён —
+       известна только единица оборудования. Показываем её позиции, но
+       НЕ выдаём их за состав конкретного заказа и не считаем их в
+       «строках компонентов»: у единицы в среднем 27 заказов, и подстановка
+       раздувала бы счёт с 38 151 реальной строки до миллиона. */
     const byEo = new Map();
     (M.mtrList || []).forEach(r => {
       if (F.sites.size && !F.sites.has(r.s)) return;
       if (!YS.has(String(r.y))) return;
       const k = eoKey(r.e);
       if (!byEo.has(k)) byEo.set(k, []);
-      byEo.get(k).push(r);
+      byEo.get(k).push(r); linesInSlice++;
     });
     orders.forEach(o => {
       if (o.rows && o.rows.length) return;
-      o.rows = (byEo.get(eoKey(o.e)) || []).map(r => ({ c: r.c, qp: r.qp, qf: r.qf, p: r.p, a: r.a, up: 0, uf: 0 }));
-      if (o.rows.length) o.n = o.rows.length;
+      o.rows = (byEo.get(eoKey(o.e)) || []).map(r => ({ c: r.c, qp: r.qp, qf: r.qf, p: r.p, a: r.a, up: 0, uf: 0, eoLevel: true }));
+      if (o.rows.length) eoLevelComps = true;
     });
   }
   if (QMTR || QCAT) {
     orders = orders.filter(o => {
       const rows = (o.rows || []).filter(r => lineMatchesMtr(r.c));
       if (!rows.length) return false;
-      o.rows = rows; o.n = rows.length;
+      o.rows = rows;
+      if (!eoLevelComps) o.n = rows.length;
       return true;
     });
   }
   orders.forEach(o => { o.tp = o.p + o.up; o.ta = o.a + o.uf; o.ex = o.tp ? 100 * o.ta / o.tp : null; });
   orders.sort((a, b) => (b.tp + b.ta) - (a.tp + a.ta));
   const t = { p: sum(orders, o => o.p), a: sum(orders, o => o.a), up: sum(orders, o => o.up), uf: sum(orders, o => o.uf), n: sum(orders, o => o.n) };
-  const mtrNote = (QMTR || QCAT) ? `фильтр ЕКМТР «${QMTR || "—"}» · каталог «${QCAT || "—"}»` : (source === "detail" ? "полная детализация площадки и года" : "встроенный срез куба");
+  const mtrNote = (QMTR || QCAT)
+    ? `отбор по ${QCAT ? "каталожному № «" + QCAT + "»" : "ЕКМТР «" + QMTR + "»"}${eoLevelComps ? " — на уровне единицы оборудования" : ""}`
+    : (source === "detail" ? "полная детализация площадки и года" : "встроенный срез куба");
   document.getElementById("ordKpi").innerHTML = kpi([
     { l: "Заказов", v: num(orders.length), s: mtrNote, tone: "accent" },
-    { l: "Строк компонентов", v: num(t.n), s: source === "detail" ? "все позиции" : "агрегированные строки" },
+    source === "detail"
+      ? { l: "Строк компонентов", v: num(t.n), s: "привязаны к конкретным заказам" }
+      : { l: "Позиций ЕКМТР в срезе", v: num(linesInSlice), s: "известна единица, но не номер заказа", tone: "warn" },
     { l: "План ТОиР", v: shortR(t.p + t.up), s: `МТР ${short(t.p)} · УСО ${short(t.up)}` },
     { l: "Факт ТОиР", v: shortR(t.a + t.uf), s: "исполнение " + pct((t.p + t.up) ? 100 * (t.a + t.uf) / (t.p + t.up) : null) }
   ]);
   const ocols = [
     { k: "o", t: "Заказ" }, { k: "e", t: "Единица", cls: "name dim" },
     { k: "u", t: "Способ", cls: "dim" }, { k: "w", t: "Вид работы", cls: "dim name" },
-    { k: "n", t: "Комп.", n: true, fmt: num },
+    { k: "n", t: source === "detail" ? "Комп." : "Строк", n: true, fmt: num, hint: source === "detail" ? "Позиций компонентов в заказе" : "Строк заказа во встроенном срезе" },
     { k: "tp", t: "План", n: true, fmt: shortR }, { k: "ta", t: "Факт", n: true, fmt: shortR },
     { k: "ex", t: "Исп.", n: true, fmt: v => v == null ? "—" : pct(v) }
   ];
@@ -2311,9 +2357,10 @@ PANES.ord = function (host) {
   const cur = orders.find(o => o.o === SEL.order);
   tableView(host.querySelector("#tComp"), {
     id: "tComp", sort: "p", maxH: 480,
-    rows: cur ? cur.rows.map(r => ({ c: r.c, qp: r.qp, qf: r.qf, up: r.qp ? r.p / r.qp : null, ua: r.qf ? r.a / r.qf : null, p: r.p, a: r.a, uso: (r.up || 0) + (r.uf || 0) })) : [],
+    rows: cur ? cur.rows.map(r => ({ c: r.c, oem: oemOf(r.c), qp: r.qp, qf: r.qf, up: r.qp ? r.p / r.qp : null, ua: r.qf ? r.a / r.qf : null, p: r.p, a: r.a, uso: (r.up || 0) + (r.uf || 0) })) : [],
     cols: [
       { k: "c", t: "Компонент / ЕКМТР", cls: "name" },
+      { k: "oem", t: "Каталожный №", cls: "dim", fmt: v => v ? `<code style="font-size:11px">${esc(v)}</code>` : "—", hint: "Номер детали производителя из справочника oem_idx" },
       { k: "qp", t: "Кол. план", n: true, fmt: v => v == null || v === "" ? "—" : num(v) },
       { k: "qf", t: "Кол. факт", n: true, fmt: v => v == null || v === "" ? "—" : num(v) },
       { k: "up", t: "Цена план", n: true, fmt: v => v == null ? "—" : short(v) },
@@ -2321,8 +2368,12 @@ PANES.ord = function (host) {
       { k: "p", t: "План ₽", n: true, fmt: short }, { k: "a", t: "Факт ₽", n: true, fmt: short },
       { k: "uso", t: "УСО ₽", n: true, fmt: shortR }
     ],
-    empty: cur ? "У заказа нет строк компонентов в этом источнике" : (source === "detail" ? "Выберите заказ слева" : "Компоненты доступны после загрузки детализации: отметьте одну площадку и один год")
+    empty: cur ? "У этой единицы нет позиций ЕКМТР во встроенном срезе" : (source === "detail" ? "Выберите заказ слева" : "Выберите заказ слева — покажем позиции его единицы оборудования")
   });
+  if (cur && eoLevelComps) {
+    host.querySelector("#tComp").insertAdjacentHTML("afterbegin",
+      callout("warn", `Это позиции ЕКМТР <b>единицы оборудования</b> «${esc(cur.e || "")}», а не состав заказа ${esc(cur.o)}: во встроенном срезе номер заказа у позиции не сохранён. Чтобы увидеть состав именно этого заказа, отметьте слева одну площадку и один год — подгрузится полная детализация.`));
+  }
 };
 let QORD = "";
 let QMTR = "";
@@ -2512,12 +2563,7 @@ function wire() {
     const fall = e.target.closest("input[data-fall]");
     if (fall) {
       const def = FDEF[fall.getAttribute("data-fall")];
-      if (def) {
-        const s = def.set();
-        const items = def.items();
-        if (fall.checked) items.forEach(v => s.add(v)); else items.forEach(v => s.delete(v));
-        refresh();
-      }
+      if (def) { def.set().clear(); refresh(); }
       return;
     }
     const cb = e.target.closest("input[data-fk]");
@@ -2557,6 +2603,8 @@ function wire() {
     const b = e.target.closest("button[data-t]"); if (b) setTab(b.dataset.t);
   });
   document.getElementById("chips").addEventListener("click", e => {
+    const g = e.target.closest("[data-chipg]");
+    if (g) { const gr = (document.getElementById("chips").__groups || [])[+g.getAttribute("data-chipg")]; if (gr) gr.set.clear(); refresh(); return; }
     const x = e.target.closest("[data-chip]"); if (!x) return;
     const v = x.getAttribute("data-chip");
     if (v === "m") { F.mFrom = ""; F.mTo = ""; const a = document.getElementById("mFrom"), b = document.getElementById("mTo"); if (a) a.value = ""; if (b) b.value = ""; }
@@ -2676,6 +2724,7 @@ async function boot() {
     let ktg = null;
     try { ktg = await fetchJSON("ktg.json", "готовность парка (КТГ)", 84, 96); } catch (e) { console.warn("КТГ не загружен:", e); }
     try { OEMIDX = await fetchJSON("oem_idx.json", "каталожные номера", 96, 98); } catch (e) { console.warn("oem_idx:", e); }
+    buildOemIndex();
     setBoot(97, "связывание готовности и затрат…");
     finishBoot(cube, ktg);
   } catch (e) {

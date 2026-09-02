@@ -842,8 +842,31 @@ function boot(cube){
     renderKtg(); renderCharts(filteredCombo()); refreshModels();
   }).catch(()=>{});
 }
+function showLocalOpen(err){
+  const host=document.getElementById("kpis")||document.body;
+  host.innerHTML=`<div class="k" style="grid-column:1/-1">
+    <div class="l">Не удалось загрузить данные (${err||"Failed to fetch"})</div>
+    <div class="v" style="font-size:14px;font-weight:500">Укажите cube.json и ktg.json из папки архива</div>
+    <p class="note">cube.json <input type="file" id="localCube" accept=".json"></p>
+    <p class="note">ktg.json <input type="file" id="localKtg" accept=".json"></p>
+    <button class="pri" id="localGo">Открыть локально</button>
+  </div>`;
+  document.getElementById("localGo").onclick=async()=>{
+    const cf=document.getElementById("localCube").files[0];
+    if(!cf){ alert("Выберите cube.json"); return; }
+    const cube=JSON.parse(await cf.text());
+    const kf=document.getElementById("localKtg").files[0];
+    if(kf){
+      const d=JSON.parse(await kf.text());
+      cube.ktg=d.eo; cube.ktgMonths=d.months||[];
+    }
+    boot(cube);
+  };
+}
 if(window.EMBEDDED_CUBE) boot(window.EMBEDDED_CUBE);
-else fetch("cube.json").then(r=>r.json()).then(boot).catch(e=>{ document.getElementById("kpis").innerHTML=`<div class="k">${e}</div>`; });
+else if(location.protocol==="file:") showLocalOpen("файл открыт с диска");
+else fetch("cube.json").then(r=>{ if(!r.ok) throw new Error(r.status); return r.json(); }).then(boot).catch(e=>showLocalOpen(e && e.message || e));
+
 
 </script>
 </body>

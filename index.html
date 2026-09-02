@@ -151,6 +151,12 @@ select{cursor:pointer}
 .chip .x{cursor:pointer;color:var(--ink-4);font-size:13px;line-height:1;padding:0 2px;border-radius:99px}
 .chip .x:hover{color:var(--bad);background:var(--bad-bg)}
 .chip.ghost{background:none;border-style:dashed;color:var(--ink-4)}
+.quickfind{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px;margin:0 0 12px;align-items:end}
+.quickfind label{display:flex;flex-direction:column;gap:4px;font-size:11px;color:var(--ink-3)}
+.quickfind input{width:100%;padding:8px 10px;border-radius:8px;border:var(--hair);background:var(--surface);color:var(--ink);font-size:14px}
+.quickfind .hits{grid-column:1/-1;display:flex;flex-wrap:wrap;gap:6px}
+.quickfind .hit{cursor:pointer;padding:4px 8px;border-radius:99px;border:var(--hair);background:var(--surface-2);font-size:12px}
+.quickfind .hit:hover{border-color:var(--accent)}
 
 /* ---------- KPI ---------- */
 .kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(168px,1fr));gap:10px;margin-bottom:14px}
@@ -384,6 +390,20 @@ body.ready #boot{display:none}
   </nav>
 
   <div class="chips" id="chips"></div>
+  <div class="quickfind" id="quickFind">
+    <label>Модель
+      <input type="search" id="qModel" list="dlModels" placeholder="поиск и выбор модели">
+    </label>
+    <label>Гаражный номер
+      <input type="search" id="qGarage" list="dlGarages" placeholder="поиск и выбор гаража">
+    </label>
+    <label>Заказ
+      <input type="search" id="qOrderFind" placeholder="номер заказа — Enter выбрать">
+    </label>
+    <datalist id="dlModels"></datalist>
+    <datalist id="dlGarages"></datalist>
+    <div class="hits" id="qHits"></div>
+  </div>
   <div id="perimeter"></div>
   <div class="kpis" id="kpis"></div>
   <div id="panes"></div>
@@ -450,6 +470,27 @@ function downloadCSV(name, header, rows) {
     document.documentElement.setAttribute("data-theme", t);
     const ic = document.getElementById("themeIcon");
     if (ic) ic.innerHTML = '<use href="#' + (t === "dark" ? "i-sun" : "i-moon") + '"/>';
+  }
+  const qf = document.getElementById("quickFind");
+  if (qf) {
+    qf.addEventListener("keydown", e => {
+      if (e.key !== "Enter") return;
+      if (e.target.id === "qModel") applyQuick("model", e.target.value);
+      if (e.target.id === "qGarage") applyQuick("garage", e.target.value);
+      if (e.target.id === "qOrderFind") applyQuick("order", e.target.value);
+    });
+    qf.addEventListener("change", e => {
+      if (e.target.id === "qModel") applyQuick("model", e.target.value);
+      if (e.target.id === "qGarage") applyQuick("garage", e.target.value);
+    });
+    qf.addEventListener("click", e => {
+      const h = e.target.closest("[data-qkind]");
+      if (!h) return;
+      const k = h.getAttribute("data-qkind"), v = h.getAttribute("data-qval");
+      if (k === "model") pickModel(v);
+      if (k === "garage") pickGarage(v);
+      if (k === "order") pickOrder(v);
+    });
   }
   document.addEventListener("click", e => {
     const b = e.target.closest("#themeBtn"); if (!b) return;
@@ -2331,6 +2372,7 @@ function refresh() {
   YS = activeYears();
   computeBase();
   buildSidebar();
+  fillQuickLists();
   renderChips();
   renderPerimeter();
   renderKpis();
@@ -2339,6 +2381,86 @@ function refresh() {
   if (st && TAB === "ord") loadDetail(st, null);
 }
 const refreshSoon = debounce(refresh, 60);
+
+
+function fillQuickLists() {
+  const dm = document.getElementById("dlModels");
+  const dg = document.getElementById("dlGarages");
+  if (dm) dm.innerHTML = modelPool().slice(0, 400).map(v => `<option value="${esc(v)}">`).join("");
+  if (dg) dg.innerHTML = garagePool().slice(0, 400).map(v => `<option value="${esc(v)}">`).join("");
+}
+function pickModel(v) {
+  v = (v || "").trim(); if (!v) return;
+  const pool = modelPool();
+  const hit = pool.find(x => x.toLowerCase() === v.toLowerCase()) || pool.find(x => x.toLowerCase().includes(v.toLowerCase()));
+  if (!hit) { showHits("Модель не найдена в текущем срезе", []); return; }
+  F.models.add(hit);
+  refresh();
+}
+function pickGarage(v) {
+  v = String(v || "").trim(); if (!v) return;
+  const pool = garagePool();
+  const hit = pool.find(x => String(x) === v) || pool.find(x => String(x).includes(v));
+  if (!hit) { showHits("Гаражный номер не найден в текущем срезе", []); return; }
+  F.garages.add(String(hit));
+  refresh();
+}
+function orderIndex() {
+  const acc = new Map();
+  (M.orders || []).forEach(r => {
+    if (!r.o) return;
+    if (F.sites.size && !F.sites.has(r.s)) return;
+    if (YS && YS.size && !YS.has(String(r.y))) return;
+    if (!acc.has(r.o)) acc.set(r.o, { o: r.o, e: r.e, y: r.y, s: r.s });
+  });
+  if (D.det && D.det.o) {
+    for (let i = 0; i < D.det.n; i++) {
+      const o = D.det.o[i];
+      if (o && !acc.has(o)) acc.set(o, { o, e: D.det.e[D.det.ei[i]], y: D.det.y, s: D.det.s });
+    }
+  }
+  return [...acc.values()];
+}
+function findOrders(q) {
+  q = (q || "").trim().toLowerCase();
+  if (!q) return [];
+  return orderIndex().filter(r => String(r.o).toLowerCase().includes(q) || String(r.e || "").toLowerCase().includes(q)).slice(0, 20);
+}
+function pickOrder(id) {
+  if (!id) return;
+  SEL.order = String(id);
+  QORD = String(id);
+  setTab("ord");
+}
+function showHits(title, items) {
+  const box = document.getElementById("qHits");
+  if (!box) return;
+  if (!items.length) { box.innerHTML = title ? `<span class="fnote">${esc(title)}</span>` : ""; return; }
+  box.innerHTML = items.map(it => `<span class="hit" data-qkind="${esc(it.kind)}" data-qval="${esc(it.val)}">${esc(it.label)}</span>`).join("");
+}
+function applyQuick(kind, raw) {
+  raw = (raw || "").trim();
+  if (!raw) return;
+  if (kind === "model") {
+    const pool = modelPool();
+    const exact = pool.filter(v => v.toLowerCase() === raw.toLowerCase());
+    const part = pool.filter(v => v.toLowerCase().includes(raw.toLowerCase()));
+    const hits = (exact.length ? exact : part).slice(0, 12);
+    if (hits.length === 1) pickModel(hits[0]);
+    else showHits(hits.length ? "Выберите модель" : "Модель не найдена", hits.map(v => ({ kind: "model", val: v, label: "модель · " + v })));
+  } else if (kind === "garage") {
+    const pool = garagePool();
+    const exact = pool.filter(v => String(v) === raw);
+    const part = pool.filter(v => String(v).includes(raw));
+    const hits = (exact.length ? exact : part).slice(0, 12);
+    if (hits.length === 1) pickGarage(hits[0]);
+    else showHits(hits.length ? "Выберите гаражный номер" : "Гараж не найден", hits.map(v => ({ kind: "garage", val: v, label: "гараж · " + v })));
+  } else if (kind === "order") {
+    const hits = findOrders(raw);
+    if (hits.length === 1) pickOrder(hits[0].o);
+    else showHits(hits.length ? "Выберите заказ" : "Заказ не найден в текущем срезе", hits.map(v => ({ kind: "order", val: v.o, label: v.o + (v.e ? " · " + v.e : "") })));
+  }
+}
 
 function wire() {
   const side = document.getElementById("side");
@@ -2414,6 +2536,11 @@ function wire() {
   document.addEventListener("input", debounce(e => {
     if (e.target && e.target.id === "qOrd") { QORD = e.target.value; renderTab(); const q = document.getElementById("qOrd"); if (q) { q.focus(); q.setSelectionRange(q.value.length, q.value.length); } }
   }, 250));
+  document.getElementById("panes").addEventListener("keydown", e => {
+    if (e.key !== "Enter" || !e.target || e.target.id !== "qOrd") return;
+    const hits = findOrders(e.target.value);
+    if (hits.length) pickOrder(hits[0].o);
+  });
   window.addEventListener("hashchange", () => { const t = location.hash.replace("#", ""); if (PANES[t] && t !== TAB) setTab(t); });
   document.addEventListener("keydown", e => {
     if (e.key === "Escape") { document.body.classList.remove("faside"); }

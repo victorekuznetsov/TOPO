@@ -2176,6 +2176,33 @@ function loadDetail(st, onDone) {
     .then(d => { D.det = d; D.detLoading = false; if (TAB === "ord") renderTab(); })
     .catch(e => { D.detErr = String(e && e.message || e); D.detLoading = false; if (TAB === "ord") renderTab(); });
 }
+
+function compsForCatalog(q) {
+  q = (q || "").trim().toLowerCase();
+  if (!q) return null;
+  const s = new Set();
+  const oem = OEMIDX.oem || [], cs = OEMIDX.c || [];
+  for (let i = 0; i < oem.length; i++) {
+    if (String(oem[i]).toLowerCase().includes(q) || String(cs[i]).toLowerCase().includes(q)) s.add(cs[i]);
+  }
+  (M.mtrList || []).forEach(r => {
+    if ((r.c || "").toLowerCase().includes(q) || (r.g || "").toLowerCase().includes(q)) s.add(r.c);
+  });
+  return s;
+}
+function lineMatchesMtr(c) {
+  const name = String(c || "");
+  const low = name.toLowerCase();
+  if (QMTR && !low.includes(QMTR.toLowerCase())) return false;
+  if (QCAT) {
+    const q = QCAT.toLowerCase();
+    if (low.includes(q)) return true;
+    const set = compsForCatalog(QCAT);
+    if (set && set.size && ![...set].some(n => n === name || low.includes(String(n).toLowerCase()))) return false;
+    if (set && !set.size && !low.includes(q)) return false;
+  }
+  return true;
+}
 PANES.ord = function (host) {
   const st = detState();
   const cov = M.cov.orders;
@@ -2186,7 +2213,11 @@ PANES.ord = function (host) {
   else if (D.det) head = callout("info", `Полная детализация <b>${esc(M.sites[D.det.s] || D.det.s)} · ${esc(D.det.y)}</b>: ${num(D.det.n)} строк компонентов, ${num(D.det.e.length)} единиц оборудования, ${num(D.det.c.length)} наименований.`);
 
   host.innerHTML = head +
-    `<div style="margin-bottom:12px"><input type="search" id="qOrd" placeholder="поиск по номеру заказа, единице оборудования или компоненту" style="max-width:520px" value="${esc(QORD)}"></div>
+    `<div class="quickfind" style="margin-bottom:12px">
+      <label>Заказ / ЕО<input type="search" id="qOrd" placeholder="номер заказа или единица" value="${esc(QORD)}"></label>
+      <label>ЕКМТР<input type="search" id="qMtr" placeholder="наименование компонента" value="${esc(QMTR)}"></label>
+      <label>Каталожный №<input type="search" id="qCat" placeholder="номер детали производителя" value="${esc(QCAT)}"></label>
+    </div>`
      <div class="kpis" id="ordKpi"></div>
      <div class="grid g2">
        ${card("Заказы", "клик раскрывает компоненты", "tOrd", { tools: dlBtn("tOrd") })}
@@ -2204,6 +2235,7 @@ PANES.ord = function (host) {
       if (F.methods.size && !F.methods.has(u) && !(F.methods.has("Хозспособ") && u === "ХС") && !(F.methods.has("Комбинированный") && u === "Комб")) continue;
       if (F.works.size && !F.works.has(w)) continue;
       if (q && !((o + " " + e + " " + c).toLowerCase().includes(q))) continue;
+      if (!lineMatchesMtr(c)) continue;
       let x = lines.get(o);
       if (!x) lines.set(o, x = { o, e, w, u, p: 0, a: 0, up: 0, uf: 0, n: 0, rows: [] });
       x.p += d.p[i] || 0; x.a += d.a[i] || 0; x.up += d.up[i] || 0; x.uf += d.uf[i] || 0; x.n++;
@@ -2245,11 +2277,20 @@ PANES.ord = function (host) {
       if (o.rows.length) o.n = o.rows.length;
     });
   }
+  if (QMTR || QCAT) {
+    orders = orders.filter(o => {
+      const rows = (o.rows || []).filter(r => lineMatchesMtr(r.c));
+      if (!rows.length) return false;
+      o.rows = rows; o.n = rows.length;
+      return true;
+    });
+  }
   orders.forEach(o => { o.tp = o.p + o.up; o.ta = o.a + o.uf; o.ex = o.tp ? 100 * o.ta / o.tp : null; });
   orders.sort((a, b) => (b.tp + b.ta) - (a.tp + a.ta));
   const t = { p: sum(orders, o => o.p), a: sum(orders, o => o.a), up: sum(orders, o => o.up), uf: sum(orders, o => o.uf), n: sum(orders, o => o.n) };
+  const mtrNote = (QMTR || QCAT) ? `фильтр ЕКМТР «${QMTR || "—"}» · каталог «${QCAT || "—"}»` : (source === "detail" ? "полная детализация площадки и года" : "встроенный срез куба");
   document.getElementById("ordKpi").innerHTML = kpi([
-    { l: "Заказов", v: num(orders.length), s: source === "detail" ? "полная детализация площадки и года" : "встроенный срез куба", tone: "accent" },
+    { l: "Заказов", v: num(orders.length), s: mtrNote, tone: "accent" },
     { l: "Строк компонентов", v: num(t.n), s: source === "detail" ? "все позиции" : "агрегированные строки" },
     { l: "План ТОиР", v: shortR(t.p + t.up), s: `МТР ${short(t.p)} · УСО ${short(t.up)}` },
     { l: "Факт ТОиР", v: shortR(t.a + t.uf), s: "исполнение " + pct((t.p + t.up) ? 100 * (t.a + t.uf) / (t.p + t.up) : null) }
@@ -2284,6 +2325,9 @@ PANES.ord = function (host) {
   });
 };
 let QORD = "";
+let QMTR = "";
+let QCAT = "";
+let OEMIDX = {oem:[], c:[]};
 
 /* ---------- Качество данных ---------- */
 PANES.dq = function (host) {
@@ -2502,7 +2546,7 @@ function wire() {
     if (h) { h.parentElement.classList.toggle("open"); return; }
     if (e.target.closest("#btnReset")) {
       [F.sites, F.years, F.methods, F.fleets, F.works, F.kcls, F.makers, F.models, F.garages].forEach(s => s.clear());
-      F.mFrom = ""; F.mTo = ""; SEL.eo = null; SEL.order = null; QORD = "";
+      F.mFrom = ""; F.mTo = ""; SEL.eo = null; SEL.order = null; QORD = ""; QMTR = ""; QCAT = "";
       Object.keys(FQ).forEach(k => FQ[k] = "");
       const a = document.getElementById("mFrom"), b = document.getElementById("mTo");
       if (a) a.value = ""; if (b) b.value = "";
@@ -2535,6 +2579,8 @@ function wire() {
   });
   document.addEventListener("input", debounce(e => {
     if (e.target && e.target.id === "qOrd") { QORD = e.target.value; renderTab(); const q = document.getElementById("qOrd"); if (q) { q.focus(); q.setSelectionRange(q.value.length, q.value.length); } }
+    if (e.target && e.target.id === "qMtr") { QMTR = e.target.value; renderTab(); const q = document.getElementById("qMtr"); if (q) { q.focus(); q.setSelectionRange(q.value.length, q.value.length); } }
+    if (e.target && e.target.id === "qCat") { QCAT = e.target.value; renderTab(); const q = document.getElementById("qCat"); if (q) { q.focus(); q.setSelectionRange(q.value.length, q.value.length); } }
   }, 250));
   document.getElementById("panes").addEventListener("keydown", e => {
     if (e.key !== "Enter" || !e.target || e.target.id !== "qOrd") return;
@@ -2629,6 +2675,7 @@ async function boot() {
     await new Promise(r => setTimeout(r, 0));
     let ktg = null;
     try { ktg = await fetchJSON("ktg.json", "готовность парка (КТГ)", 84, 96); } catch (e) { console.warn("КТГ не загружен:", e); }
+    try { OEMIDX = await fetchJSON("oem_idx.json", "каталожные номера", 96, 98); } catch (e) { console.warn("oem_idx:", e); }
     setBoot(97, "связывание готовности и затрат…");
     finishBoot(cube, ktg);
   } catch (e) {

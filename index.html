@@ -777,9 +777,15 @@ const CHART = (function () {
       });
       const bw = (W - padL - padR) / n;
       L.forEach((lab, i) => {
-        g += `<rect x="${sx(i) - bw / 2}" y="${padT}" width="${bw}" height="${h - padT - padB}" fill="transparent" ${tipAttr(tipRows(lab, S, i, vfmt))}/>`;
+        const ann = o.annotations && o.annotations[i];
+        const tip = tipRows(lab, S, i, vfmt) + (ann ? ann.tip : "");
+        g += `<rect x="${sx(i) - bw / 2}" y="${padT}" width="${bw}" height="${h - padT - padB}" fill="transparent" ${tipAttr(tip)}/>`;
         S.forEach(s => { const v = s.data[i]; if (v == null || !isFinite(v)) return;
           g += `<circle cx="${sx(i)}" cy="${sy(v)}" r="${n > 30 ? 1.8 : 2.8}" style="fill:${s.color}"/>`; });
+        if (ann && ann.value != null) {
+          const cx = sx(i).toFixed(1), cy = sy(ann.value).toFixed(1);
+          g += `<circle cx="${cx}" cy="${cy}" r="8" style="fill:var(--bad)" fill-opacity=".16" stroke="var(--bad)" stroke-width="1.4"/>`;
+        }
       });
       return legend(S) + `<svg viewBox="0 0 ${W} ${h}" height="${h}" role="img">${g}</svg>`;
     });
@@ -2085,6 +2091,47 @@ PANES.link = function (host) {
 };
 
 /* ---------- КТГ ---------- */
+/* Отмечаем месяцы, где агрегированный КТГ факт заметно просел (порог —
+   ДЕКЛАЙН_П_П п.п. к последнему известному значению), и подсказываем
+   вероятную причину: единицу оборудования с самым сильным падением
+   готовности в этом же месяце и её крупнейший по затратам заказ с
+   совпадающим базисным месяцем. Это эвристика (агрегат может проседать
+   от многих единиц одновременно) — маркер называет только САМОГО
+   вероятного виновника, не исчерпывающий список причин. */
+const DECLINE_THRESHOLD_PP = 5;
+function declineAnnotations(idx, ms, rows, sa) {
+  const out = [];
+  let lastVal = null;
+  for (let pos = 0; pos < sa.length; pos++) {
+    const v = sa[pos];
+    if (v != null && lastVal != null && (lastVal - v) >= DECLINE_THRESHOLD_PP) {
+      const i = idx[pos];
+      const monthKey = ms[i];
+      let worst = null, worstScore = -Infinity;
+      rows.forEach(r => {
+        const av = r.am && r.am[i];
+        if (!(av > 0)) return;
+        const avPrev = r.am && r.am[i - 1];
+        const score = avPrev > 0 ? (avPrev - av) : (100 - av) - 1000; // своё падение важнее абсолютного уровня без истории
+        if (score > worstScore) { worstScore = score; worst = r; }
+      });
+      if (worst) {
+        const cand = (M.orders || []).filter(o => o.m === monthKey && eoKey(o.e) === worst.k);
+        let bestOrder = null, bestCost = -Infinity;
+        cand.forEach(o => { const c = (o.p || 0) + (o.a || 0) + (o.up || 0) + (o.uf || 0); if (c > bestCost) { bestCost = c; bestOrder = o; } });
+        const label = worst.gn ? `${worst.e} (гараж ${worst.gn})` : worst.e;
+        let tip = `<div class="tr"><span class="k">Заметное снижение</span><span class="v">${deltaTag(v - lastVal, " п.п.")}</span></div>` +
+          `<div class="tr"><span class="k">Вероятная причина</span><span class="v">${esc(trunc(label, 34))}</span></div>`;
+        tip += bestOrder
+          ? `<div class="tr"><span class="k">Заказ</span><span class="v">${esc(bestOrder.o)} · ${esc(trunc(bestOrder.w || "", 26))}</span></div><div class="tr"><span class="k">Затраты</span><span class="v">${esc(shortR(bestCost))}</span></div>`
+          : `<div class="tr"><span class="k">Заказ</span><span class="v">нет в срезе крупнейших — см. вкладку «Заказы»</span></div>`;
+        out[pos] = { value: v, tip };
+      }
+    }
+    if (v != null) lastVal = v;
+  }
+  return out;
+}
 PANES.ktg = function (host) {
   const rows = (M.ktg || []).filter(passKtgRow);
   const idx = ktgIdx();
@@ -2096,7 +2143,7 @@ PANES.ktg = function (host) {
     (noKtgYears.length ? callout("warn", `Данные КТГ есть только за ${esc((M.ktgYears || []).join(", "))}; годы <b>${esc(noKtgYears.join(", "))}</b> в выгрузку готовности не входят.`) : "") +
     (F.fleets.size ? callout("info", `Фильтр «группа МВЗ» применён к КТГ через совпадение единиц оборудования: справочник классов техники и справочник групп МВЗ в исходных данных не пересекаются ни одним значением, прямое сопоставление названий дало бы пустой результат. Сопоставлено ${num(M.ktgMatched)} из ${num((M.ktg || []).length)} единиц.`) : "") +
     `<div class="kpis" id="ktgKpi"></div>
-     <div class="grid">${card("КТГ план и факт по месяцам", "среднее по единицам с данными за месяц", "cKm", { foot: "Ноль в помесячном ряду означает «единицы не было в парке или нет данных», а не нулевую готовность — такие месяцы исключены из среднего. Внизу показано покрытие." })}</div>
+     <div class="grid">${card("КТГ план и факт по месяцам", "среднее по единицам с данными за месяц", "cKm", { foot: `Ноль в помесячном ряду означает «единицы не было в парке или нет данных», а не нулевую готовность — такие месяцы исключены из среднего. Внизу показано покрытие. Красный кружок — падение факта на ${DECLINE_THRESHOLD_PP}+ п.п. к прошлому месяцу; наведите курсор — подскажет вероятную причину (единица и её крупнейший заказ этого месяца).` })}</div>
      <div class="grid">${card("Готовность по классам техники", "месяц × класс, факт", "cKh")}</div>
      <div class="grid g3">
        ${card("Классы техники", "", "tKcls", { tools: dlBtn("tKcls") })}
@@ -2139,9 +2186,10 @@ PANES.ktg = function (host) {
       { name: "КТГ факт", color: "var(--c1)", data: sa, width: 2.4 }
     ];
     if (svcTarget != null) kmSeries.push({ name: "Сервисный КТГ (контракт)", color: "var(--c4)", data: labels.map(() => svcTarget), dash: true });
+    const annotations = declineAnnotations(idx, ms, rows, sa);
     CHART.line(host.querySelector("#cKm"), {
       height: 260, labels, rotate: labels.length > 18, valueFmt: v => NF0.format(v) + "%", min: 50, max: 100,
-      series: kmSeries
+      series: kmSeries, annotations
     });
     const covHost = el("div", "", "");
     CHART.bars(covHost, { height: 74, labels, hideX: true, valueFmt: num, series: [{ name: "Единиц с данными КТГ в месяце", color: "var(--c2)", data: cov }] });

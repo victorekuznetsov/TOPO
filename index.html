@@ -2551,36 +2551,68 @@ PANES.eo = function (host) {
 };
 
 /* ---------- Внутренние ВМЗ ---------- */
+const VMZ_HOZ_METHODS = new Set(["Хозспособ", "Комбинированный"]);
 PANES.vmz = function (host) {
-  const src = M.vmz.filter(passVmz);
-  const m = new Map();
-  src.forEach(r => {
-    let x = m.get(r.name); if (!x) m.set(r.name, x = { name: r.name, p: 0, a: 0, up: 0, uf: 0, o: 0, sites: new Set(), years: new Set(), fleets: new Set() });
-    x.p += r.p || 0; x.a += r.a || 0; x.up += r.up || 0; x.uf += r.uf || 0; x.o += r.o || 0;
-    x.sites.add(r.s); x.years.add(String(r.y)); (r.fleets || []).forEach(f => x.fleets.add(f));
-  });
-  const rows = [...m.values()].map(x => ({
-    name: x.name, p: x.p, a: x.a, up: x.up, uf: x.uf, o: x.o,
-    sites: [...x.sites].map(s => M.sites[s] || s).join(", "), years: [...x.years].sort().join(", "),
-    fleets: [...x.fleets].slice(0, 4).join(", "), nf: x.fleets.size,
-    ex: x.p ? 100 * x.a / x.p : null
-  })).sort((a, b) => b.p - a.p);
+  const keys = allowedEoKeys();
+  const eoFiltered = !!keys;
+  /* vmzSlices агрегирован по (подразделение × площадка × год × парк) — без
+     разреза по единице оборудования, как matSlices у МТР и usoSlices у
+     УСО. Тот же мост: поле .wc в M.orders хранит подрядчика для внешнего
+     ремонта, а для хозспособа/комбинированного — именно внутреннее
+     подразделение (проверено: 68 357 из 70 384 заказов с .wc совпадают с
+     названиями подразделений ВМЗ) — и там же есть .e (единица
+     оборудования) и .f (парк). Пересборка куба из сырых выгрузок не
+     понадобилась — мост уже есть в уже загруженных данных. */
+  let rows;
+  if (eoFiltered) {
+    const ordSrc = M.orders.filter(r => VMZ_HOZ_METHODS.has(r.u) && r.wc)
+      .filter(r => (!F.sites.size || F.sites.has(r.s)) && YS.has(String(r.y)))
+      .filter(r => !F.fleets.size || F.fleets.has(r.f))
+      .filter(r => !F.methods.size || F.methods.has(r.u))
+      .filter(r => !F.works.size || F.works.has(r.w))
+      .filter(r => keys.has(eoKey(r.e)));
+    const m = new Map();
+    ordSrc.forEach(r => {
+      let x = m.get(r.wc); if (!x) m.set(r.wc, x = { name: r.wc, p: 0, a: 0, up: 0, uf: 0, o: 0, sites: new Set(), years: new Set(), fleets: new Set() });
+      x.p += r.p || 0; x.a += r.a || 0; x.up += r.up || 0; x.uf += r.uf || 0; x.o++;
+      x.sites.add(r.s); x.years.add(String(r.y)); if (r.f) x.fleets.add(r.f);
+    });
+    rows = [...m.values()].map(x => ({
+      name: x.name, p: x.p, a: x.a, up: x.up, uf: x.uf, o: x.o,
+      sites: [...x.sites].map(s => M.sites[s] || s).join(", "), years: [...x.years].sort().join(", "),
+      fleets: [...x.fleets].slice(0, 4).join(", "), nf: x.fleets.size,
+      ex: x.p ? 100 * x.a / x.p : null
+    })).sort((a, b) => b.p - a.p);
+  } else {
+    const src = M.vmz.filter(passVmz);
+    const m = new Map();
+    src.forEach(r => {
+      let x = m.get(r.name); if (!x) m.set(r.name, x = { name: r.name, p: 0, a: 0, up: 0, uf: 0, o: 0, sites: new Set(), years: new Set(), fleets: new Set() });
+      x.p += r.p || 0; x.a += r.a || 0; x.up += r.up || 0; x.uf += r.uf || 0; x.o += r.o || 0;
+      x.sites.add(r.s); x.years.add(String(r.y)); (r.fleets || []).forEach(f => x.fleets.add(f));
+    });
+    rows = [...m.values()].map(x => ({
+      name: x.name, p: x.p, a: x.a, up: x.up, uf: x.uf, o: x.o,
+      sites: [...x.sites].map(s => M.sites[s] || s).join(", "), years: [...x.years].sort().join(", "),
+      fleets: [...x.fleets].slice(0, 4).join(", "), nf: x.fleets.size,
+      ex: x.p ? 100 * x.a / x.p : null
+    })).sort((a, b) => b.p - a.p);
+  }
   const totP = sum(rows, r => r.p), totA = sum(rows, r => r.a);
-  /* vmzSlices (как и matSlices у МТР) не хранит разрез по единице
-     оборудования — только площадка, год и парк. Доля от полностью
-     отфильтрованной базы (с учётом модели/производителя) была бы
-     нечестной: числитель её не учитывает, а знаменатель схлопывается —
-     см. тот же фикс на вкладке «МТР / ЕКМТР». Используем тот же охват,
-     что умеет сама витрина — площадка, год, парк. */
-  const slicesP = sum(M.combo.filter(r => passSlice(r) && (!F.fleets.size || F.fleets.has(r.f))), r => r.p);
-  const eoFiltered = F.kcls.size || F.makers.size || F.models.size || F.garages.size;
+  /* Сравнивать план подразделений нужно с тем же охватом, что и сам срез:
+     без фильтра техники — план МТР по площадкам/годам/паркам (M.combo);
+     с фильтром техники — план МТР именно по отобранным единицам
+     оборудования (M.eoList), иначе знаменатель не совпадает с числителем. */
+  const slicesP = eoFiltered
+    ? sum(M.eoList.filter(r => passEo(r, keys)), r => r.p)
+    : sum(M.combo.filter(r => passSlice(r) && (!F.fleets.size || F.fleets.has(r.f))), r => r.p);
   host.innerHTML =
     `<div class="kpis" id="vmzKpi"></div>` +
     callout("info", `ВМЗ — внутренние места возникновения затрат (хозспособ и комбинированный ремонт). Витрина покрывает ${shortR(M.cov.vmz.p)} плана МТР против ${shortR(M.cov.totals.p)} всего плана (${pct(100 * M.cov.vmz.share)}); остаток относится к заказам без назначенного внутреннего рабочего места.`) +
-    (eoFiltered ? callout("warn", `Таблица ниже сохранена в кубе по подразделению, площадке, году и парку — <b>без разреза по единице оборудования</b>, поэтому фильтры класса техники, производителя, модели и гаражного номера на неё не действуют (площадка, год и парк — действуют).`) : "") +
+    (eoFiltered ? callout("info", `Активен фильтр техники — подразделения ниже посчитаны из встроенного среза заказов хозспособа и комбинированного ремонта (крупнейшие по сумме: ${num(M.cov.orders.rows)} из ${num(M.cov.orders.src)} заказо-строк в источнике), а не из полной витрины по площадке/году/парку. План/факт ниже может быть ниже полного контура по этой технике — часть заказов вне среза.`) : "") +
     (F.contractors.size ? callout("warn", `Фильтр «Подрядчик» на эту вкладку не действует: ВМЗ — это хозспособ и комбинированный ремонт, подрядчик у таких работ по определению не назначен.`) : "") +
     `<div class="grid">${card("Крупнейшие внутренние подразделения", "план и факт МТР", "cVmz")}</div>
-     <div class="grid">${card("Внутренние места возникновения затрат", "по площадке, году и парку среза — без разреза по единице оборудования", "tVmz", { tools: dlBtn("tVmz") })}</div>`;
+     <div class="grid">${card("Внутренние места возникновения затрат", eoFiltered ? "по отобранной технике — из встроенного среза заказов" : "по площадке, году и парку среза — без разреза по единице оборудования", "tVmz", { tools: dlBtn("tVmz") })}</div>`;
   document.getElementById("vmzKpi").innerHTML = kpi([
     { l: "Подразделений", v: num(rows.length), s: "в текущем срезе", tone: "accent" },
     { l: "План МТР", v: shortR(totP), s: pct(slicesP ? 100 * totP / slicesP : 0) + " плана МТР площадок/годов/парков среза" },

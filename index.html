@@ -437,7 +437,7 @@ body.ready #boot{display:none}
     <button data-t="dq" role="tab">Качество данных</button>
   </nav>
 
-  <div id="ctxbar"></div>
+  <div id="ctxbar" class="ctxbar"></div>
   <div class="chips" id="chips"></div>
   <div class="quickfind" id="quickFind">
     <label>Модель
@@ -1444,7 +1444,18 @@ const FDEF = {
 function modelPool() {
   const s = new Set();
   (M.ktg || []).forEach(r => { if (!r.md) return; if (F.kcls.size && !F.kcls.has(r.f)) return; if (F.makers.size && !F.makers.has(r.mk)) return; if (F.garages.size && !F.garages.has(r.gn)) return; if (F.sites.size && !F.sites.has(r.s)) return; s.add(r.md); });
-  if (!F.kcls.size && !F.makers.size) M.eoList.forEach(r => { if (r.md && (!F.sites.size || F.sites.has(r.s))) s.add(r.md); });
+  /* Витрина КТГ знает не более 1 585 единиц из ~10 600 в eoList. Раньше
+     резерв из eoList отключался целиком, как только был выбран
+     производитель, — и модель, которой в КТГ просто нет, невозможно
+     было ни найти, ни выбрать, хотя техника с ней существует.
+     Проверяем производителя через мост M.mkByEo вместо того, чтобы
+     закрывать резерв полностью. */
+  if (!F.kcls.size && !F.garages.size) M.eoList.forEach(r => {
+    if (!r.md) return;
+    if (F.sites.size && !F.sites.has(r.s)) return;
+    if (F.makers.size) { const mk = M.mkByEo.get(eoKey(r.e)); if (!mk || !F.makers.has(mk)) return; }
+    s.add(r.md);
+  });
   return [...s].sort((a, b) => a.localeCompare(b, "ru"));
 }
 function garagePool() {
@@ -2190,7 +2201,9 @@ PANES.mtr = function (host) {
   const mat = M.mat.filter(passSlice);
   const m = new Map();
   mat.forEach(r => { let x = m.get(r.name); if (!x) m.set(r.name, x = { name: r.name, p: 0, a: 0, n: 0, sites: new Set(), years: new Set() }); x.p += r.p || 0; x.a += r.a || 0; x.n += r.n || 0; x.sites.add(r.s); x.years.add(String(r.y)); });
-  let rows = [...m.values()].map(x => ({ name: x.name, p: x.p, a: x.a, n: x.n, ex: x.p ? 100 * x.a / x.p : null, sites: [...x.sites].map(s => M.sites[s] || s).join(", "), years: [...x.years].sort().join(", ") })).sort((a, b) => b.p - a.p);
+  let rows = [...m.values()]
+    .filter(x => lineMatchesMtr(x.name))
+    .map(x => ({ name: x.name, p: x.p, a: x.a, n: x.n, ex: x.p ? 100 * x.a / x.p : null, sites: [...x.sites].map(s => M.sites[s] || s).join(", "), years: [...x.years].sort().join(", ") })).sort((a, b) => b.p - a.p);
   const totP = sum(rows, r => r.p), totA = sum(rows, r => r.a);
   let acc = 0;
   rows.forEach(r => { acc += r.p; r.cum = totP ? 100 * acc / totP : 0; r.abc = r.cum <= 80 ? "A" : r.cum <= 95 ? "B" : "C"; });
@@ -2215,7 +2228,7 @@ PANES.mtr = function (host) {
      <div class="grid">${card(SEL.eo ? "Компоненты ЕКМТР: " + SEL.eo.e : "Компоненты ЕКМТР по единицам оборудования", "план и факт количества и расчётной цены", "tLines", { tools: dlBtn("tLines"), foot: "Расчётная цена = стоимость / количество. Расхождение цены план→факт показывает, где отклонение вызвано ценой, а не объёмом." })}</div>
      <div class="grid">${card("Глобальный каталог ЕКМТР", "1 800 крупнейших компонентов", "tCat", { tools: dlBtn("tCat") })}</div>`;
   document.getElementById("mtrKpi").innerHTML = kpi([
-    { l: "Позиций в срезе", v: num(rows.length), s: `группа A — ${num(nA)} позиций`, tone: "accent" },
+    { l: "Позиций в срезе", v: num(rows.length), s: (QMTR || QCAT) ? `отбор по ${QCAT ? "каталожному № «" + esc(QCAT) + "»" : "ЕКМТР «" + esc(QMTR) + "»"}` : `группа A — ${num(nA)} позиций`, tone: "accent" },
     { l: "План МТР (покрытая часть)", v: shortR(totP), s: `${pct(comboP ? 100 * totP / comboP : 0)} плана МТР среза` },
     { l: "Факт МТР (покрытая часть)", v: shortR(totA), s: `исполнение ${pct(totP ? 100 * totA / totP : null)}` },
     { l: "Строк компонентов", v: num(lines.length), s: SEL.eo ? "по выбранной единице" : "в текущем срезе", tone: "info" }
@@ -2886,6 +2899,7 @@ function pickOrder(id) {
   if (!id) return;
   SEL.order = String(id);
   QORD = String(id);
+  QMTR = ""; QCAT = ""; // иначе старый поиск по ЕКМТР мог скрыть все компоненты выбранного заказа
   setTab("ord");
 }
 function showHits(title, items) {
@@ -2941,13 +2955,13 @@ function globalSearch(qraw) {
   if (gHits.length) out.garages = gHits.map(g => ({ label: String(g), sub: "гараж", go: () => { F.garages.add(String(g)); setTab("eo"); refresh(); } }));
 
   const compHits = (M.mtrCat || []).filter(c => (c.c || "").toLowerCase().includes(q)).slice(0, 6);
-  if (compHits.length) out.comps = compHits.map(c => ({ label: c.c, sub: c.g || "", go: () => { QMTR = c.c; setTab("mtr"); } }));
+  if (compHits.length) out.comps = compHits.map(c => ({ label: c.c, sub: c.g || "", go: () => { QMTR = c.c; QCAT = ""; setTab("mtr"); } }));
 
   const oem = OEMIDX.oem || [], cs = OEMIDX.c || [];
   const catSeen = new Set(), catHits = [];
   for (let i = 0; i < oem.length && catHits.length < 6; i++) {
     const o = String(oem[i]);
-    if (o.toLowerCase().includes(q) && !catSeen.has(o)) { catSeen.add(o); catHits.push({ label: o, sub: cs[i], go: () => { QCAT = o; setTab("mtr"); } }); }
+    if (o.toLowerCase().includes(q) && !catSeen.has(o)) { catSeen.add(o); catHits.push({ label: o, sub: cs[i], go: () => { QCAT = o; QMTR = ""; setTab("mtr"); } }); }
   }
   if (catHits.length) out.catalog = catHits;
   return out;
@@ -3121,9 +3135,23 @@ function wire() {
     if (goto) { setTab(goto.getAttribute("data-goto")); return; }
   });
   document.addEventListener("input", debounce(e => {
-    if (e.target && e.target.id === "qOrd") { QORD = e.target.value; renderTab(); const q = document.getElementById("qOrd"); if (q) { q.focus(); q.setSelectionRange(q.value.length, q.value.length); } }
-    if (e.target && e.target.id === "qMtr") { QMTR = e.target.value; renderTab(); const q = document.getElementById("qMtr"); if (q) { q.focus(); q.setSelectionRange(q.value.length, q.value.length); } }
-    if (e.target && e.target.id === "qCat") { QCAT = e.target.value; renderTab(); const q = document.getElementById("qCat"); if (q) { q.focus(); q.setSelectionRange(q.value.length, q.value.length); } }
+    /* Заказ / ЕКМТР / Каталожный № — независимые поля с общим полем
+       результата: старое значение в одном тихо резало результаты
+       другого до нуля (искали заказ — ловили пустоту от забытого
+       поиска по компоненту). Ввод в одно поле очищает остальные два —
+       активен только один поиск за раз, как и ожидает пользователь. */
+    if (e.target && e.target.id === "qOrd") {
+      QORD = e.target.value; if (QORD) { QMTR = ""; QCAT = ""; }
+      renderTab(); const q = document.getElementById("qOrd"); if (q) { q.focus(); q.setSelectionRange(q.value.length, q.value.length); }
+    }
+    if (e.target && e.target.id === "qMtr") {
+      QMTR = e.target.value; if (QMTR) { QORD = ""; QCAT = ""; }
+      renderTab(); const q = document.getElementById("qMtr"); if (q) { q.focus(); q.setSelectionRange(q.value.length, q.value.length); }
+    }
+    if (e.target && e.target.id === "qCat") {
+      QCAT = e.target.value; if (QCAT) { QORD = ""; QMTR = ""; }
+      renderTab(); const q = document.getElementById("qCat"); if (q) { q.focus(); q.setSelectionRange(q.value.length, q.value.length); }
+    }
   }, 250));
   document.getElementById("panes").addEventListener("keydown", e => {
     if (e.key !== "Enter" || !e.target || e.target.id !== "qOrd") return;

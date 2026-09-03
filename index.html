@@ -2280,34 +2280,67 @@ PANES.ktg = function (host) {
 
 /* ---------- Контрагенты УСО ---------- */
 PANES.uso = function (host) {
-  const src = M.uso.filter(passSlice).filter(r => !F.contractors.size || F.contractors.has(vendor(r.name)));
-  const m = new Map();
-  src.forEach(r => {
-    const nm = vendor(r.name);
-    let x = m.get(nm); if (!x) m.set(nm, x = { name: nm, up: 0, uf: 0, n: 0, sites: new Set(), years: new Set(), forms: new Set() });
-    x.up += r.up || 0; x.uf += r.uf || 0; x.n += r.n || 0; x.sites.add(r.s); x.years.add(String(r.y)); x.forms.add(r.name);
-  });
-  const rows = [...m.values()].map(x => ({
-    name: x.name, up: x.up, uf: x.uf, n: x.n, forms: x.forms.size,
-    sites: [...x.sites].map(s => M.sites[s] || s).join(", "),
-    years: [...x.years].sort().join(", "),
-    ex: x.up ? 100 * x.uf / x.up : null
-  })).sort((a, b) => b.uf - a.uf);
-  const rawNames = new Set(src.map(r => r.name)).size;
+  const keys = allowedEoKeys();
+  /* usoSlices агрегирован по (контрагент × площадка × год) — без разреза по
+     парку и единице оборудования, как и matSlices у МТР. Тот же приём: когда
+     активен фильтр парка/класса/производителя/модели/гаража, вместо
+     бесполезного среза строим витрину из встроенного среза заказов
+     (M.orders — там есть и подрядчик .wc, и единица оборудования .e, и
+     парк .f), агрегируя по контрагенту через тот же мост allowedEoKeys().
+     Заказы — выборка крупнейших (M.cov.orders), покрытие уже полного
+     usoSlices, поэтому это явно показано в подсказке ниже, а не скрыто. */
+  const eoFilteredUso = !!keys || F.fleets.size > 0;
+  let rows, rawNames;
+  if (eoFilteredUso) {
+    const ordSrc = M.orders.filter(r => (!F.sites.size || F.sites.has(r.s)) && YS.has(String(r.y)))
+      .filter(r => !F.fleets.size || F.fleets.has(r.f))
+      .filter(r => !F.methods.size || F.methods.has(r.u))
+      .filter(r => !F.works.size || F.works.has(r.w))
+      .filter(r => !keys || keys.has(eoKey(r.e)))
+      .filter(r => !F.contractors.size || F.contractors.has(vendor(r.wc)))
+      .filter(r => r.wc);
+    const m = new Map();
+    ordSrc.forEach(r => {
+      const nm = vendor(r.wc);
+      let x = m.get(nm); if (!x) m.set(nm, x = { name: nm, up: 0, uf: 0, n: 0, sites: new Set(), years: new Set(), forms: new Set() });
+      x.up += r.up || 0; x.uf += r.uf || 0; x.n++; x.sites.add(r.s); x.years.add(String(r.y)); x.forms.add(r.wc);
+    });
+    rows = [...m.values()].map(x => ({
+      name: x.name, up: x.up, uf: x.uf, n: x.n, forms: x.forms.size,
+      sites: [...x.sites].map(s => M.sites[s] || s).join(", "),
+      years: [...x.years].sort().join(", "),
+      ex: x.up ? 100 * x.uf / x.up : null
+    })).sort((a, b) => b.uf - a.uf);
+    rawNames = new Set(ordSrc.map(r => r.wc)).size;
+  } else {
+    const src = M.uso.filter(passSlice).filter(r => !F.contractors.size || F.contractors.has(vendor(r.name)));
+    const m = new Map();
+    src.forEach(r => {
+      const nm = vendor(r.name);
+      let x = m.get(nm); if (!x) m.set(nm, x = { name: nm, up: 0, uf: 0, n: 0, sites: new Set(), years: new Set(), forms: new Set() });
+      x.up += r.up || 0; x.uf += r.uf || 0; x.n += r.n || 0; x.sites.add(r.s); x.years.add(String(r.y)); x.forms.add(r.name);
+    });
+    rows = [...m.values()].map(x => ({
+      name: x.name, up: x.up, uf: x.uf, n: x.n, forms: x.forms.size,
+      sites: [...x.sites].map(s => M.sites[s] || s).join(", "),
+      years: [...x.years].sort().join(", "),
+      ex: x.up ? 100 * x.uf / x.up : null
+    })).sort((a, b) => b.uf - a.uf);
+    rawNames = new Set(src.map(r => r.name)).size;
+  }
   const totF = sum(rows, r => r.uf), totP = sum(rows, r => r.up);
   let acc = 0, n80 = 0;
   for (const r of rows) { acc += r.uf; n80++; if (acc >= .8 * totF) break; }
   const top1 = rows[0];
   const merged = rows.filter(r => r.forms > 1).length;
-  const eoFilteredUso = F.kcls.size || F.makers.size || F.models.size || F.garages.size || F.fleets.size;
   host.innerHTML =
     `<div class="kpis" id="usoKpi"></div>` +
     (OPT.merge
       ? callout("info", `Написания контрагентов склеены: в срезе <b>${num(merged)}</b> контрагентов собраны из нескольких вариантов написания. Причина — усечение наименования до ${num(M.vendorCap)} символов в выгрузке PM-M06 (${num(M.vendorCut)} из ${num(M.vendorRaw)} имён упираются в этот предел), разный регистр, кавычки и правовая форма. По всему контуру склейка сводит ${num(M.vendorRaw)} написаний к ${num(M.vendorMerged)} контрагентам. Переключатель — в блоке «Методика» слева.`)
       : callout("warn", "Склейка написаний выключена: один и тот же контрагент считается несколько раз (например «Сумитек Интернейшнл», «СУМИТЕК ИНТЕРНЕЙШНЛ», «ООО «Сумитек Интерне»). Показатели концентрации занижены.")) +
-    (eoFilteredUso ? callout("warn", `Витрина контрагентов УСО сохранена в кубе по контрагенту, площадке и году — <b>без разреза по парку и единице оборудования</b>, поэтому фильтры парка, класса техники, производителя, модели и гаражного номера на неё не действуют (площадка и год — действуют).`) : "") +
+    (eoFilteredUso ? callout("info", `Активен фильтр парка/техники — контрагенты ниже посчитаны из встроенного среза заказов (крупнейшие по сумме: ${num(M.cov.orders.rows)} из ${num(M.cov.orders.src)} заказо-строк в источнике), а не из полной витрины УСО по площадке и году. Факт УСО ниже может быть ниже полного факта по этой технике — часть заказов вне среза.`) : "") +
     `<div class="grid">${card("Парето по факту УСО", "20 крупнейших контрагентов и накопленная доля", "cPar", { foot: "Столбцы до линии 80% окрашены брендовым цветом — это контрагенты, формирующие основную часть затрат на подряд." })}</div>
-     <div class="grid">${card("Контрагенты", "план, факт и исполнение договоров", "tUso", { tools: dlBtnPF("tUso") })}</div>`;
+     <div class="grid">${card("Контрагенты", eoFilteredUso ? "по отобранной технике — из встроенного среза заказов" : "план, факт и исполнение договоров", "tUso", { tools: dlBtnPF("tUso") })}</div>`;
   document.getElementById("usoKpi").innerHTML = kpi([
     { l: "Контрагентов", v: num(rows.length), s: OPT.merge ? `склеено из ${num(rawNames)} написаний в срезе` : "без склейки написаний", tone: "accent" },
     { l: "Факт УСО", v: shortR(totF), s: `план ${short(totP)} · исполнение ${pct(totP ? 100 * totF / totP : null)}` },

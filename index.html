@@ -86,6 +86,30 @@ a:hover{text-decoration:underline}
   font-family:inherit;font-size:12px;transition:background .12s,color .12s,border-color .12s}
 .iconbtn:hover{background:var(--surface-3);color:var(--ink);border-color:var(--line-2)}
 .iconbtn.on{background:var(--accent-soft);border-color:var(--accent);color:var(--accent)}
+.iconbtn.ok{background:var(--good-bg);border-color:var(--good);color:var(--good)}
+.hideSm{white-space:nowrap}
+
+/* глобальный поиск в шапке */
+.tb-search{position:relative;flex:0 1 340px;min-width:0}
+.tb-search .ic{position:absolute;left:9px;top:50%;transform:translateY(-50%);width:14px;height:14px;color:var(--ink-4);pointer-events:none}
+.tb-search input{width:100%;height:32px;padding:0 10px 0 30px;background:var(--surface-2);border:var(--hair);border-radius:var(--radius);color:var(--ink);font:inherit;font-size:12.5px}
+.tb-search input:hover{border-color:var(--line-2)}
+.tb-search input:focus-visible{border-color:var(--accent)}
+.tb-hits{position:absolute;top:38px;left:0;right:0;background:var(--surface);border:1px solid var(--line-2);border-radius:var(--radius);box-shadow:var(--shadow);max-height:340px;overflow:auto;z-index:70}
+.tb-hits .grp{padding:6px 10px 3px;font-size:10px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-4);font-weight:600}
+.tb-hits .it{display:flex;justify-content:space-between;gap:10px;padding:7px 10px;cursor:pointer;font-size:12.5px;color:var(--ink-2)}
+.tb-hits .it:hover{background:var(--surface-2);color:var(--ink)}
+.tb-hits .it b{color:var(--ink);font-weight:500}
+.tb-hits .it small{color:var(--ink-4);font-size:11px;flex:0 0 auto}
+.tb-hits .none{padding:10px;font-size:12px;color:var(--ink-4)}
+@media(max-width:900px){ .tb-search{display:none} .hideSm{display:none} }
+
+/* хлебная крошка контекста */
+.ctxbar{display:flex;align-items:center;gap:8px;margin:-6px 0 12px;padding:7px 11px;background:var(--accent-soft);border:1px solid var(--accent);border-radius:var(--radius);font-size:12.5px;color:var(--ink-2)}
+.ctxbar b{color:var(--ink)}
+.ctxbar .x{margin-left:auto;cursor:pointer;color:var(--ink-3);flex:0 0 auto;width:16px;height:16px}
+.ctxbar .x:hover{color:var(--crit,var(--bad))}
+.ctxbar .x svg{width:100%;height:100%}
 .iconbtn svg{width:15px;height:15px}
 
 /* ---------- каркас ---------- */
@@ -176,6 +200,8 @@ select{cursor:pointer}
 .delta.up{color:var(--good);background:var(--good-bg)}
 .delta.down{color:var(--bad);background:var(--bad-bg)}
 .delta.flat{color:var(--ink-3);background:var(--surface-3)}
+.delta[data-goto]{cursor:pointer}
+.delta[data-goto]:hover{background:var(--accent-soft);color:var(--accent)}
 
 /* ---------- карточки ---------- */
 .grid{display:grid;gap:12px;margin-bottom:12px}
@@ -292,10 +318,16 @@ body.ready #boot{display:none}
   table{font-size:11.5px}
   td.name{max-width:160px}
 }
+#ctxbar:empty{display:none}
 @media print{
-  aside,.tabs,.topbar,#tip{display:none!important}
+  aside,.tabs,.topbar,#tip,#mfilters,#gHits,.minibtn,.tools,#btnFilters,.card .tools{display:none!important}
   .shell{grid-template-columns:1fr}
-  .card{break-inside:avoid;box-shadow:none}
+  main{padding:0 12px}
+  .card{break-inside:avoid;box-shadow:none;border-color:#0002}
+  .kpi{break-inside:avoid}
+  main::before{content:attr(data-print-ctx);display:block;font-size:11px;color:#666;margin-bottom:10px}
+  .tw{max-height:none!important;overflow:visible!important}
+  body{background:#fff;color:#000}
 }
 @media(prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
 </style>
@@ -315,6 +347,10 @@ body.ready #boot{display:none}
     <symbol id="i-warn" viewBox="0 0 24 24"><path d="M12 3.5 22 20H2Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M12 9.5v5M12 17.2v.1" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></symbol>
     <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9.2" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M12 11v6M12 7.6v.1" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></symbol>
     <symbol id="i-dl" viewBox="0 0 24 24"><path d="M12 3.5v11m0 0 4-4m-4 4-4-4M4 18.5h16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M20 20l-5-5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></symbol>
+    <symbol id="i-copy" viewBox="0 0 24 24"><rect x="8.5" y="8.5" width="11" height="11" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M15.5 8.5V6a1.5 1.5 0 0 0-1.5-1.5H6A1.5 1.5 0 0 0 4.5 6v8A1.5 1.5 0 0 0 6 15.5h2.5" fill="none" stroke="currentColor" stroke-width="1.8"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="M4.5 12.5l5 5 10-11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-x" viewBox="0 0 24 24"><path d="M5 5l14 14M19 5L5 19" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></symbol>
   </defs>
 </svg>
 
@@ -336,7 +372,13 @@ body.ready #boot{display:none}
     <span class="bs" id="brandSub">SAP PM-M06</span>
   </div>
   <div class="sp"></div>
+  <div class="tb-search">
+    <svg class="ic"><use href="#i-search"/></svg>
+    <input type="search" id="gSearch" placeholder="заказ, ЕО, модель, гараж, компонент… (/)" autocomplete="off">
+    <div class="tb-hits" id="gHits" hidden></div>
+  </div>
   <div class="tb-actions">
+    <button class="iconbtn" id="btnCopy" type="button" title="Скопировать сводку текстом"><svg><use href="#i-copy"/></svg><span class="hideSm">Сводка</span></button>
     <button class="iconbtn" id="mfilters" type="button" aria-label="Фильтры"><svg><use href="#i-filter"/></svg><span id="mfCnt">Фильтры</span></button>
     <button class="iconbtn" id="themeBtn" type="button" aria-label="Сменить тему" title="Тёмная / светлая тема"><svg id="themeIcon"><use href="#i-moon"/></svg></button>
   </div>
@@ -374,6 +416,8 @@ body.ready #boot{display:none}
       <p class="fnote">Исключает годы, где часть площадок отсутствует в выгрузке (2022, 2023), чтобы динамика не ломалась о состав контура.</p>
       <label class="switch"><input type="checkbox" id="optClosed"><span>Только закрытые периоды</span></label>
       <p class="fnote">Оставляет годы с фактом (2022–2026). 2027 — чистый план, факт нулевой.</p>
+      <label class="switch"><input type="checkbox" id="optExclUnassigned"><span>Исключить неопознанное оборудование</span></label>
+      <p class="fnote" id="noteExcl">Убирает из сумм заказы без единицы оборудования — переключает базу на витрину ЕО, месяц и способ пропадают из графиков.</p>
     </div>
   </div>
 </aside>
@@ -389,9 +433,11 @@ body.ready #boot{display:none}
     <button data-t="eo" role="tab">Оборудование</button>
     <button data-t="vmz" role="tab">Внутренние ВМЗ</button>
     <button data-t="ord" role="tab">Заказы</button>
+    <button data-t="cmp" role="tab">План 2026 → 2027</button>
     <button data-t="dq" role="tab">Качество данных</button>
   </nav>
 
+  <div id="ctxbar"></div>
   <div class="chips" id="chips"></div>
   <div class="quickfind" id="quickFind">
     <label>Модель
@@ -452,9 +498,10 @@ function deltaTag(v, unit, invert) {
   const cls = Math.abs(v) < 0.05 ? "flat" : good ? "up" : "down";
   return `<span class="delta ${cls}">${v > 0 ? "+" : v < 0 ? "−" : ""}${NF1.format(Math.abs(v))}${unit || ""}</span>`;
 }
-function downloadCSV(name, header, rows) {
+function downloadCSV(name, header, rows, ctxLine) {
   const q = v => { v = v == null ? "" : String(v); return /[";\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; };
-  const body = [header.map(q).join(";")].concat(rows.map(r => r.map(q).join(";"))).join("\r\n");
+  const meta = ctxLine ? [["# " + ctxLine].map(q).join(";"), [""].join(";")] : [];
+  const body = meta.concat([header.map(q).join(";")]).concat(rows.map(r => r.map(q).join(";"))).join("\r\n");
   const blob = new Blob(["﻿" + body], { type: "text/csv;charset=utf-8" });
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob);
@@ -874,7 +921,7 @@ const CHART = (function () {
 const D = { cube: null, ktgSrc: [], ktgMonths: [], det: null, detKey: "" };
 const M = {};
 const F = { sites: new Set(), years: new Set(), methods: new Set(), fleets: new Set(), works: new Set(), kcls: new Set(), makers: new Set(), models: new Set(), garages: new Set(), mFrom: "", mTo: "" };
-const OPT = { merge: true, comparable: false, closed: false };
+const OPT = { merge: true, comparable: false, closed: false, excludeUnassigned: false };
 let TAB = "sum";
 const SEL = { eo: null, order: null, vendor: null };
 
@@ -991,6 +1038,20 @@ function buildModel(cube) {
   M.vendorMap = buildVendorMap([...w.keys()], n => w.get(n) || 0, maxLen);
   M.vendorRaw = w.size;
   M.vendorMerged = new Set([...M.vendorMap.values()]).size;
+  /* концентрация закупки услуг: сколько контрагентов дают 80% факта УСО —
+     с склейкой написаний и без, чтобы «Качество данных» не хардкодило
+     число, которое поплывёт при обновлении выгрузки */
+  const pareto80 = nameFn => {
+    const mm = new Map();
+    M.uso.forEach(r => { const k = nameFn(r.name); mm.set(k, (mm.get(k) || 0) + (r.uf || 0)); });
+    const vals = [...mm.values()].filter(v => v > 0).sort((a, b) => b - a);
+    const totV = sum(vals);
+    let acc = 0, n2 = 0;
+    for (const v of vals) { acc += v; n2++; if (acc >= 0.8 * totV) break; }
+    return { n: n2, total: vals.length };
+  };
+  const p80m = pareto80(n => M.vendorMap.get(n) || n), p80r = pareto80(n => n);
+  M.uso80 = { merged: p80m.n, mergedTotal: p80m.total, raw: p80r.n, rawTotal: p80r.total };
 
   /* --- покрытие встроенных срезов --- */
   const cp = sum(M.combo, r => r.p), ca = sum(M.combo, r => r.a);
@@ -1058,6 +1119,111 @@ function buildKtg(src, months) {
   M.mkByEo = new Map();
   M.gnByEo = new Map();
   M.ktg.forEach(r => { if (r.mk) M.mkByEo.set(r.k, r.mk); if (r.gn) M.gnByEo.set(r.k, String(r.gn)); });
+}
+
+/* =====================================================================
+   3б. Сравнение двух планов подряд (по умолчанию — два последних года
+       выгрузки; так вкладка «План N → N+1» переживает добавление новых
+       лет без переименования). Источник — eoList (полное разложение по
+       единице, включая "Не присвоено") и M.orders (крупнейшие заказы,
+       используются только как иллюстративная выборка, не как итог).
+   ===================================================================== */
+function compareYears() {
+  const ys = M.years.slice().sort();
+  if (ys.length < 2) return null;
+  return [ys[ys.length - 2], ys[ys.length - 1]];
+}
+function planTotal(rows, y, siteSet) {
+  let p = 0; rows.forEach(r => { if (String(r.y) !== y) return; if (siteSet && siteSet.size && !siteSet.has(r.s)) return; p += (r.p || 0) + (r.up || 0); });
+  return p;
+}
+/* Разложение плана года на «опознанный» (есть единица оборудования) и
+   «неопознанный» (r.e === "Не присвоено") — по площадке и по парку. */
+function unassignedBreakdown(y, siteSet) {
+  const bySite = new Map(), byFleet = new Map();
+  let idTot = 0, unTot = 0, unN = 0;
+  M.eoList.forEach(r => {
+    if (String(r.y) !== y) return;
+    if (siteSet && siteSet.size && !siteSet.has(r.s)) return;
+    const v = (r.p || 0) + (r.up || 0);
+    const un = r.e === "Не присвоено";
+    if (un) { unTot += v; unN += r.o || 1; } else idTot += v;
+    const sk = r.s;
+    if (!bySite.has(sk)) bySite.set(sk, { id: 0, un: 0 });
+    bySite.get(sk)[un ? "un" : "id"] += v;
+    const fk = r.f || "—";
+    if (!byFleet.has(fk)) byFleet.set(fk, { id: 0, un: 0 });
+    byFleet.get(fk)[un ? "un" : "id"] += v;
+  });
+  return { idTot, unTot, unN, total: idTot + unTot, bySite, byFleet };
+}
+/* Заказы order_pack года с байт-в-байт одинаковой суммой (план МТР +
+   план УСО) на трёх и более РАЗНЫХ единицах оборудования одного вида
+   работ и площадки — признак нормативной/шаблонной цены без учёта
+   фактического состояния конкретной машины. Только на встроенном
+   срезе крупнейших заказов — иллюстрация паттерна, не итог. */
+function templatedGroups(y, siteSet, minSum) {
+  minSum = minSum || 500000;
+  const groups = new Map();
+  M.orders.forEach(r => {
+    if (String(r.y) !== y) return;
+    if (siteSet && siteSet.size && !siteSet.has(r.s)) return;
+    const p = Math.round(r.p || 0), up = Math.round(r.up || 0);
+    if (p + up < minSum) return;
+    const key = r.s + "|" + r.w + "|" + p + "|" + up;
+    if (!groups.has(key)) groups.set(key, { s: r.s, w: r.w, price: p + up, rows: [] });
+    groups.get(key).rows.push(r);
+  });
+  const out = [];
+  groups.forEach(g => {
+    const eoSet = new Set(g.rows.map(r => r.e));
+    if (g.rows.length >= 3 && eoSet.size >= 3) out.push({ s: g.s, w: g.w, price: g.price, n: g.rows.length, eoN: eoSet.size, sum: g.price * g.rows.length, rows: g.rows });
+  });
+  return out.sort((a, b) => b.sum - a.sum);
+}
+/* Средний размер заказа по способу исполнения и году — из combo
+   (заказо-строки в поле o), показывает эффект шаблонных мелких заказов
+   без привязки к order_pack-выборке. */
+function methodOrderProfile(y, siteSet) {
+  const m = new Map();
+  M.combo.forEach(r => {
+    if (String(r.y) !== y) return;
+    if (siteSet && siteSet.size && !siteSet.has(r.s)) return;
+    const k = r.u || "—";
+    if (!m.has(k)) m.set(k, { u: k, sum: 0, o: 0 });
+    const x = m.get(k); x.sum += (r.p || 0) + (r.up || 0); x.o += r.o || 0;
+  });
+  return [...m.values()].map(x => ({ ...x, avg: x.o ? x.sum / x.o : null })).sort((a, b) => b.sum - a.sum);
+}
+/* Позиции ЕКМТР, для которых расчётная цена (₽/шт) на одной площадке
+   изменилась вдвое и более между двумя годами — из mtr_pack. */
+function componentPriceSwings(yA, yB, siteSet) {
+  const by = new Map();
+  M.mtrList.forEach(r => {
+    const y = String(r.y);
+    if (y !== yA && y !== yB) return;
+    if (siteSet && siteSet.size && !siteSet.has(r.s)) return;
+    if (!r.qp || r.qp <= 0) return;
+    const key = r.s + "|" + r.c;
+    if (!by.has(key)) by.set(key, {});
+    by.get(key)[y] = { price: (r.p || 0) / r.qp, sum: r.p || 0 };
+  });
+  const out = [];
+  by.forEach((yrs, key) => {
+    if (!yrs[yA] || !yrs[yB] || !(yrs[yA].price > 0)) return;
+    const ratio = yrs[yB].price / yrs[yA].price;
+    if (ratio >= 2 || ratio <= 0.5) {
+      const [s, c] = [key.slice(0, key.indexOf("|")), key.slice(key.indexOf("|") + 1)];
+      out.push({ s, c, pA: yrs[yA].price, pB: yrs[yB].price, ratio, sumB: yrs[yB].sum });
+    }
+  });
+  return out.sort((a, b) => Math.abs(Math.log(b.ratio)) - Math.abs(Math.log(a.ratio)));
+}
+/* Заказы, у которых способ+работа+единица+исполнитель все "Не присвоено" —
+   полностью нечитаемые заказы. Из order_pack (образец). */
+function blankOrders(y, siteSet) {
+  return M.orders.filter(r => String(r.y) === y && (!siteSet || !siteSet.size || siteSet.has(r.s))
+    && r.u === "Не присвоено" && r.w === "Не присвоено" && r.e === "Не присвоено" && r.wc === "Не присвоено");
 }
 
 /* =====================================================================
@@ -1226,6 +1392,17 @@ function tableView(host, spec) {
     if (tr && spec.onRow) spec.onRow(host.__rows[+tr.getAttribute("data-ri")]);
   };
 }
+function csvContext() {
+  const bits = [];
+  bits.push("выгружено " + new Date().toLocaleString("ru-RU"));
+  if (F.sites.size) bits.push("площадка: " + [...F.sites].map(s => M.sites[s] || s).join(", "));
+  if (F.years.size) bits.push("год: " + [...F.years].sort().join(", "));
+  else bits.push("годы: все");
+  if (F.methods.size) bits.push("способ: " + [...F.methods].join(", "));
+  if (F.fleets.size) bits.push("парк: " + [...F.fleets].join(", "));
+  if (F.works.size) bits.push("работа: " + [...F.works].join(", "));
+  return "ТОиР · " + bits.join(" · ");
+}
 function exportTable(host, name) {
   const s = host && host.__spec; if (!s) return;
   const rows = (host.__all || []).map(r => s.cols.map(c => {
@@ -1233,7 +1410,7 @@ function exportTable(host, name) {
     if (c.n) return v == null ? "" : String(v).replace(".", ",");
     return c.raw ? c.raw(v, r) : (v == null ? "" : v);
   }));
-  downloadCSV(name, s.cols.map(c => c.t), rows);
+  downloadCSV(name, s.cols.map(c => c.t), rows, csvContext());
 }
 function card(title, hint, bodyId, opts) {
   opts = opts || {};
@@ -1317,6 +1494,10 @@ function buildSidebar() {
 function countFilters() {
   return F.sites.size + F.years.size + F.methods.size + F.fleets.size + F.works.size + F.kcls.size + F.makers.size + F.models.size + F.garages.size + (F.mFrom ? 1 : 0) + (F.mTo ? 1 : 0);
 }
+function updatePrintCtx() {
+  const el = document.querySelector("main");
+  if (el) el.setAttribute("data-print-ctx", csvContext());
+}
 function renderChips() {
   const c = document.getElementById("chips");
   const bits = [];
@@ -1375,13 +1556,20 @@ function renderPerimeter() {
 let BASE = { rows: [], byEo: false, keys: null };
 function computeBase() {
   const keys = allowedEoKeys();
-  if (!keys) { BASE = { rows: M.combo.filter(passCombo), byEo: false, keys: null }; return; }
+  /* «Исключить неопознанное оборудование» переключает базу на витрину ЕО
+     даже без активного фильтра модели/производителя — только там есть
+     поле единицы, и только там можно отсечь r.e === "Не присвоено".
+     Плата та же, что и у фильтра по модели: пропадают месяц, способ и
+     вид работы (об этом сообщает callout ниже). */
+  if (!keys && !OPT.excludeUnassigned) { BASE = { rows: M.combo.filter(passCombo), byEo: false, keys: null, exclUnassigned: false }; return; }
   const rows = [];
+  let cutN = 0, cutSum = 0;
   for (const r of M.eoList) {
     if (!passEo(r, keys)) continue;
+    if (OPT.excludeUnassigned && r.e === "Не присвоено") { cutN++; cutSum += (r.p || 0) + (r.up || 0); continue; }
     rows.push({ s: r.s, y: r.y, m: null, f: r.f, u: "—", w: "—", e: r.e, md: r.md, p: r.p || 0, a: r.a || 0, up: r.up || 0, uf: r.u || 0, sv: 0, o: r.o || 0, n: r.n || 0 });
   }
-  BASE = { rows, byEo: true, keys };
+  BASE = { rows, byEo: true, keys, exclUnassigned: OPT.excludeUnassigned, cutN, cutSum };
 }
 function yearStat(y) { return M.yearInfo[y] || { status: "?" }; }
 function splitByMaturity(rows) {
@@ -1393,6 +1581,21 @@ function splitByMaturity(rows) {
 /* =====================================================================
    7. KPI
    ===================================================================== */
+/* Доля плана, не привязанная к конкретной единице оборудования (r.e ===
+   "Не присвоено") — считается напрямую по eoList в текущих site/year,
+   независимо от BASE, чтобы показатель был виден и до включения
+   «Исключить неопознанное оборудование». */
+function unassignedStat() {
+  let sum = 0, tot = 0, n = 0;
+  M.eoList.forEach(r => {
+    if (F.sites.size && !F.sites.has(r.s)) return;
+    if (!YS.has(String(r.y))) return;
+    const v = (r.p || 0) + (r.up || 0);
+    tot += v;
+    if (r.e === "Не присвоено") { sum += v; n += r.o || 1; }
+  });
+  return { sum, tot, n, share: tot ? 100 * sum / tot : 0 };
+}
 function renderKpis() {
   const rows = BASE.rows, t = roll(rows);
   const mat = splitByMaturity(rows);
@@ -1412,6 +1615,10 @@ function renderKpis() {
     { l: "Доля УСО в плане", v: pct(usoShare), s: `подряд против хозспособа`, tone: "" },
     { l: "КТГ факт", v: kt.a == null ? "—" : pct(100 * kt.a), s: kt.a == null ? "нет данных КТГ в срезе" : `план ${pct(100 * kt.p)} ${deltaTag(100 * (kt.a - kt.p), " п.п.")} · ${num(kt.n)} ЕО`, tone: kt.a == null ? "" : kt.a >= 0.9 ? "good" : kt.a >= 0.8 ? "warn" : "bad" }
   ];
+  const un = unassignedStat();
+  if (un.sum > 1e6 && !OPT.excludeUnassigned) {
+    list.push({ l: "Неопознанное оборудование", v: pct(un.share), s: `${shortR(un.sum)} плана · ${num(un.n)} заказо-строк без ЕО<span class="delta flat" data-goto="cmp">подробнее →</span>`, tone: un.share >= 15 ? "bad" : un.share >= 5 ? "warn" : "" });
+  }
   document.getElementById("kpis").innerHTML = kpi(list);
 }
 function ktgSummary(rowsIn, idxIn) {
@@ -1437,7 +1644,7 @@ const PANES = {};
 PANES.sum = function (host) {
   const rows = BASE.rows, t = roll(rows);
   host.innerHTML =
-    (BASE.byEo ? callout("info", "Активен фильтр уровня единицы оборудования — суммы пересчитаны по витрине ЕО. В ней нет месяца, способа исполнения и вида работ, поэтому эти фильтры сейчас не применяются, а помесячные графики строятся по годам.") : "") +
+    (BASE.byEo ? callout("info", (BASE.exclUnassigned ? `«Исключить неопознанное оборудование» ` : "Активен фильтр уровня единицы оборудования ") + `— суммы пересчитаны по витрине ЕО. В ней нет месяца, способа исполнения и вида работ, поэтому эти фильтры сейчас не применяются, а помесячные графики строятся по годам.` + (BASE.exclUnassigned ? ` Убрано ${num(BASE.cutN)} заказо-строк на ${shortR(BASE.cutSum)}.` : "")) : "") +
     `<div class="grid g2">
       ${card("От плана к факту", "закрытые годы среза", "cWf", { foot: "Мостик читается слева направо: план МТР, отклонение по материалам, полученный факт, затем то же по подряду. Плановые и незакрытые годы исключены — в них отклонение отражало бы не результат, а незавершённость периода." })}
       ${card("Структура плана ТОиР", "МТР против подряда", "cStruct")}
@@ -1646,19 +1853,22 @@ PANES.dyn = function (host) {
     const cur = gy.get(y) || { p: 0, a: 0, up: 0, uf: 0, tp: 0, ta: 0, o: 0 };
     const prev = i > 0 ? (gy.get(ys[i - 1]) || null) : null;
     const cmp = prev && yearStat(y).full && yearStat(ys[i - 1]).full;
+    const ub = unassignedBreakdown(y, F.sites);
+    const unShare = ub.total ? 100 * ub.unTot / ub.total : 0;
     yrows.push({
-      y, tp: cur.tp, ta: cur.ta, o: cur.o,
+      y, tp: cur.tp, ta: cur.ta, o: cur.o, unShare,
       gp: cmp && prev.tp ? 100 * (cur.tp / prev.tp - 1) : null,
       ga: cmp && prev.ta ? 100 * (cur.ta / prev.ta - 1) : null,
       note: yearStat(y).full ? (cmp ? "" : "нет базы") : "контур неполный"
     });
   });
   tableView(host.querySelector("#tYoY"), {
-    id: "tYoY", sort: "y", dir: 1, rows: yrows,
+    id: "tYoY", sort: "y", dir: 1, rows: yrows, maxH: 340,
     cols: [
       { k: "y", t: "Год" },
       { k: "tp", t: "План ТОиР", n: true, fmt: shortR },
       { k: "gp", t: "Δ плана", n: true, fmt: v => v == null ? "—" : deltaTag(v, "%") },
+      { k: "unShare", t: "из них неопознано", n: true, fmt: v => v > 1 ? `<span class="tag ${v >= 15 ? "b" : "w"}">${pct(v)}</span>` : "—", hint: "Доля плана без единицы оборудования — см. вкладку «План N → N+1»" },
       { k: "ta", t: "Факт ТОиР", n: true, fmt: shortR },
       { k: "ga", t: "Δ факта", n: true, fmt: v => v == null ? "—" : deltaTag(v, "%") },
       { k: "note", t: "Сопоставимость", fmt: v => v ? `<span class="tag w">${esc(v)}</span>` : `<span class="tag g">сопоставим</span>` }
@@ -2342,7 +2552,8 @@ PANES.ord = function (host) {
     { l: "Факт ТОиР", v: shortR(t.a + t.uf), s: "исполнение " + pct((t.p + t.up) ? 100 * (t.a + t.uf) / (t.p + t.up) : null) }
   ]);
   const ocols = [
-    { k: "o", t: "Заказ" }, { k: "e", t: "Единица", cls: "name dim" },
+    { k: "o", t: "Заказ", fmt: (v, r) => (r.u === "Не присвоено" && r.w === "Не присвоено" && r.e === "Не присвоено" && r.wc === "Не присвоено") ? `<span class="tag b" title="Способ, работа, единица и исполнитель не назначены">пусто</span> ${esc(v)}` : esc(v) },
+    { k: "e", t: "Единица", cls: "name dim" },
     { k: "u", t: "Способ", cls: "dim" }, { k: "w", t: "Вид работы", cls: "dim name" },
     { k: "n", t: source === "detail" ? "Комп." : "Строк", n: true, fmt: num, hint: source === "detail" ? "Позиций компонентов в заказе" : "Строк заказа во встроенном срезе" },
     { k: "tp", t: "План", n: true, fmt: shortR }, { k: "ta", t: "Факт", n: true, fmt: shortR },
@@ -2375,6 +2586,145 @@ PANES.ord = function (host) {
       callout("warn", `Это позиции ЕКМТР <b>единицы оборудования</b> «${esc(cur.e || "")}», а не состав заказа ${esc(cur.o)}: во встроенном срезе номер заказа у позиции не сохранён. Чтобы увидеть состав именно этого заказа, отметьте слева одну площадку и один год — подгрузится полная детализация.`));
   }
 };
+/* ---------- План N → N+1: живая версия ревизии плана ---------- */
+PANES.cmp = function (host) {
+  const pair = compareYears();
+  if (!pair) { host.innerHTML = callout("info", "Нужно минимум два года в выгрузке для сравнения планов."); return; }
+  const [yA, yB] = pair;
+  const siteSet = F.sites;
+  const totA = planTotal(M.eoList, yA, siteSet);
+  const ub = unassignedBreakdown(yB, siteSet);
+  const headlineGrowth = totA ? 100 * (ub.total / totA - 1) : null;
+  const cleanGrowth = totA ? 100 * (ub.idTot / totA - 1) : null;
+
+  host.innerHTML =
+    callout("info", `Автоматически берутся два последних года выгрузки — сейчас <b>${esc(yA)} → ${esc(yB)}</b>. ${siteSet.size ? "Площадка ограничена фильтром слева." : "Площадка — весь контур."} Заявленный план читает всё как есть; чистый — за вычетом заказов без единицы оборудования.`) +
+    `<div class="kpis" id="cmpKpi"></div>
+     <div class="grid">${card("От плана к плану", `${yA} → ${yB}`, "cBridge", { foot: "Серый — сопоставимая база; зелёный — сокращение по опознанной технике; красный — надбавка неопознанного оборудования." })}</div>
+     <div class="grid">${card("По площадкам", "заявленный рост исчезает почти везде без неопознанного оборудования", "tCmpSite", { tools: dlBtn("tCmpSite") })}</div>
+     <div class="grid g2">
+       ${card("Средний размер заказа по способу исполнения", `${yA} → ${yB}`, "tCmpMethod", { tools: dlBtn("tCmpMethod"), foot: "Резкое падение среднего заказа при росте их числа — признак массово сгенерированных заготовок вместо индивидуально спланированных работ." })}
+       ${card("Структура: материалы против подряда", `${yA} → ${yB}`, "tCmpStruct", { tools: dlBtn("tCmpStruct") })}
+     </div>
+     <div class="grid">${card("Одна и та же цена на разной технике", `${yB} · заказы с идентичной суммой на 3+ разных ЕО`, "tCmpTpl", { tools: dlBtn("tCmpTpl"), foot: "Из встроенного среза крупнейших заказов — иллюстрация паттерна, не полный итог." })}</div>
+     <div class="grid">${card("Скачки цены компонента", `${yA} → ${yB} · один материал, та же площадка, цена ×2 и более`, "tCmpPrice", { tools: dlBtn("tCmpPrice") })}</div>
+     <div class="grid">${card("Полностью пустые заказы", `${yB} · способ + работа + ЕО + исполнитель не назначены`, "tCmpBlank", { tools: dlBtn("tCmpBlank") })}</div>`;
+
+  document.getElementById("cmpKpi").innerHTML = kpi([
+    { l: "План " + yA, v: shortR(totA), s: "база сравнения", tone: "" },
+    { l: "План " + yB + " заявленный", v: shortR(ub.total), s: headlineGrowth == null ? "—" : deltaTag(headlineGrowth, "%"), tone: headlineGrowth > 0 ? "bad" : "" },
+    { l: "Неопознанное оборудование", v: shortR(ub.unTot), s: ub.total ? pct(100 * ub.unTot / ub.total) + " плана · " + num(ub.unN) + " заказо-строк" : "—", tone: ub.unTot > 0 ? "bad" : "" },
+    { l: "План " + yB + " чистый", v: shortR(ub.idTot), s: cleanGrowth == null ? "—" : "рост к " + yA, tone: "accent" },
+    { l: "Чистый рост", v: cleanGrowth == null ? "—" : pct(cleanGrowth), s: "без неопознанного оборудования", tone: cleanGrowth == null ? "" : cleanGrowth >= 0 ? "good" : "bad" }
+  ]);
+
+  CHART.waterfall(host.querySelector("#cBridge"), {
+    height: 260,
+    items: [
+      { name: "План " + yA, value: totA, total: true, color: "var(--c6)" },
+      { name: "Опознанная техника", value: ub.idTot - totA },
+      { name: "Чистый план " + yB, value: ub.idTot, total: true, color: "var(--c6)" },
+      { name: "Неопознанное оборудование", value: ub.unTot, color: "var(--bad)" },
+      { name: "План " + yB, value: ub.total, total: true, color: "var(--bad)" }
+    ]
+  });
+
+  const siteRows = [...ub.bySite.keys()].map(s => {
+    const cur = ub.bySite.get(s);
+    const prevSite = planTotal(M.eoList, yA, new Set([s]));
+    const headline = prevSite ? 100 * ((cur.id + cur.un) / prevSite - 1) : null;
+    const clean = prevSite ? 100 * (cur.id / prevSite - 1) : null;
+    return { site: M.sites[s] || s, prev: prevSite, headline: cur.id + cur.un, hg: headline, un: cur.un, unShare: (cur.id + cur.un) ? 100 * cur.un / (cur.id + cur.un) : 0, clean: cur.id, cg: clean };
+  }).sort((a, b) => b.headline - a.headline);
+  tableView(host.querySelector("#tCmpSite"), {
+    id: "tCmpSite", rows: siteRows, sort: "headline",
+    cols: [
+      { k: "site", t: "Площадка", cls: "name" },
+      { k: "prev", t: "План " + yA, n: true, fmt: shortR },
+      { k: "headline", t: "План " + yB + " заявл.", n: true, fmt: shortR },
+      { k: "hg", t: "Рост заявл.", n: true, fmt: v => v == null ? "—" : deltaTag(v, "%") },
+      { k: "un", t: "Неопознано", n: true, fmt: (v, r) => shortR(v) + " (" + pct(r.unShare) + ")" },
+      { k: "clean", t: "План " + yB + " чистый", n: true, fmt: shortR },
+      { k: "cg", t: "Рост чистый", n: true, fmt: v => v == null ? "—" : deltaTag(v, "%") }
+    ]
+  });
+
+  const mA = methodOrderProfile(yA, siteSet), mB = methodOrderProfile(yB, siteSet);
+  const methods = uniq(mA.map(x => x.u).concat(mB.map(x => x.u)));
+  const mmA = new Map(mA.map(x => [x.u, x])), mmB = new Map(mB.map(x => [x.u, x]));
+  const methodRows = methods.map(u => {
+    const a = mmA.get(u) || { sum: 0, o: 0, avg: null }, b = mmB.get(u) || { sum: 0, o: 0, avg: null };
+    return { u, sumA: a.sum, oA: a.o, avgA: a.avg, sumB: b.sum, oB: b.o, avgB: b.avg };
+  }).sort((a, b) => b.sumB - a.sumB);
+  tableView(host.querySelector("#tCmpMethod"), {
+    id: "tCmpMethod", rows: methodRows, sort: "sumB", maxH: 320,
+    cols: [
+      { k: "u", t: "Способ", cls: "name" },
+      { k: "oA", t: yA + " заказо-строк", n: true, fmt: num },
+      { k: "avgA", t: yA + " ₽/заказ", n: true, fmt: v => v == null ? "—" : short(v) },
+      { k: "oB", t: yB + " заказо-строк", n: true, fmt: num },
+      { k: "avgB", t: yB + " ₽/заказ", n: true, fmt: v => v == null ? "—" : short(v) }
+    ]
+  });
+
+  const rA = M.combo.filter(r => String(r.y) === yA && (!siteSet.size || siteSet.has(r.s)));
+  const rB = M.combo.filter(r => String(r.y) === yB && (!siteSet.size || siteSet.has(r.s)));
+  const structRows = [
+    { l: "МТР — материалы", pA: sum(rA, r => r.p), pB: sum(rB, r => r.p) },
+    { l: "УСО — услуги сторонних организаций", pA: sum(rA, r => r.up), pB: sum(rB, r => r.up) }
+  ].map(x => ({ ...x, d: x.pA ? 100 * (x.pB / x.pA - 1) : null }));
+  tableView(host.querySelector("#tCmpStruct"), {
+    id: "tCmpStruct", rows: structRows,
+    cols: [
+      { k: "l", t: "Статья", cls: "name" },
+      { k: "pA", t: "План " + yA, n: true, fmt: shortR },
+      { k: "pB", t: "План " + yB, n: true, fmt: shortR },
+      { k: "d", t: "Δ", n: true, fmt: v => v == null ? "—" : deltaTag(v, "%") }
+    ]
+  });
+
+  const tpl = templatedGroups(yB, siteSet);
+  const tplSum = sum(tpl, x => x.sum);
+  tableView(host.querySelector("#tCmpTpl"), {
+    id: "tCmpTpl", rows: tpl, sort: "sum", maxH: 380,
+    cols: [
+      { k: "s", t: "Площадка", cls: "dim", fmt: v => M.sites[v] || v },
+      { k: "w", t: "Вид работы", cls: "name" },
+      { k: "price", t: "Цена заказа", n: true, fmt: shortR },
+      { k: "n", t: "Заказов", n: true, fmt: num },
+      { k: "eoN", t: "Разных ЕО", n: true, fmt: num },
+      { k: "sum", t: "Сумма", n: true, fmt: shortR }
+    ],
+    foot: { w: "Итого групп: " + num(tpl.length), sum: shortR(tplSum) },
+    empty: "В выбранном срезе таких групп нет"
+  });
+
+  const swings = componentPriceSwings(yA, yB, siteSet).slice(0, 60);
+  tableView(host.querySelector("#tCmpPrice"), {
+    id: "tCmpPrice", rows: swings, maxH: 380,
+    cols: [
+      { k: "s", t: "Площадка", cls: "dim", fmt: v => M.sites[v] || v },
+      { k: "c", t: "Компонент", cls: "name" },
+      { k: "pA", t: "Цена " + yA, n: true, fmt: v => shortR(v) },
+      { k: "pB", t: "Цена " + yB, n: true, fmt: v => shortR(v) },
+      { k: "ratio", t: "×", n: true, fmt: v => (v >= 1 ? "×" : "÷") + NF1.format(v >= 1 ? v : 1 / v) },
+      { k: "sumB", t: "План " + yB, n: true, fmt: shortR }
+    ],
+    empty: "Компонентов с сопоставимой ценой в обоих годах в срезе нет"
+  });
+
+  const blanks = blankOrders(yB, siteSet);
+  tableView(host.querySelector("#tCmpBlank"), {
+    id: "tCmpBlank", rows: blanks.map(r => ({ o: r.o, s: M.sites[r.s] || r.s, m: r.m, p: r.p, up: r.up })), sort: "p", maxH: 320,
+    cols: [
+      { k: "o", t: "Заказ" }, { k: "s", t: "Площадка", cls: "dim" },
+      { k: "m", t: "Базис-месяц", fmt: v => v ? esc(mLabel(v)) : "—" },
+      { k: "p", t: "План МТР", n: true, fmt: shortR }, { k: "up", t: "План УСО", n: true, fmt: shortR }
+    ],
+    empty: "Полностью пустых заказов в срезе нет"
+  });
+};
+
 let QORD = "";
 let QMTR = "";
 let QCAT = "";
@@ -2402,9 +2752,10 @@ PANES.dq = function (host) {
     { s: "warn", t: "Не присвоен способ исполнения", v: num(dq.noMethod) + " строк", d: "Не разделяется хозспособ и подряд — искажает долю УСО." },
     { s: "info", t: "План без факта в закрытых периодах", v: num(dq.planNoFact) + " срезов", d: "Работы запланированы, но не исполнены. Кандидаты на перенос или отмену плана." },
     { s: "warn", t: "Факт без плана", v: num(dq.factNoPlan) + " срезов", d: "Внеплановые работы: аварийные ремонты либо ошибки планирования." },
-    { s: "bad", t: "Дублирующие написания контрагентов", v: `${num(M.vendorRaw)} написаний → ${num(M.vendorMerged)} контрагентов`, d: `Наименование усечено до ${num(M.vendorCap)} символов (${num(M.vendorCut)} имён), различается регистром, кавычками и правовой формой. Без склейки концентрация закупки услуг занижена: 80% факта дают 47 «контрагентов» вместо 18 реальных.` },
+    { s: "bad", t: "Дублирующие написания контрагентов", v: `${num(M.vendorRaw)} написаний → ${num(M.vendorMerged)} контрагентов`, d: `Наименование усечено до ${num(M.vendorCap)} символов (${num(M.vendorCut)} имён), различается регистром, кавычками и правовой формой. Без склейки концентрация закупки услуг занижена: 80% факта дают ${num(M.uso80.raw)} «контрагентов» вместо ${num(M.uso80.merged)} реальных.` },
     { s: "bad", t: "Справочники парков не пересекаются", v: `классы КТГ ${num((M.ktgClasses || []).length)} ↔ группы МВЗ ${num(uniq(M.combo.map(r => r.f)).length)}, общих значений 0`, d: `Готовность и затраты нельзя связать по названию парка. Связка построена по совпадению единиц оборудования: ${num(M.ktgMatched)} из ${num((M.ktg || []).length)} единиц КТГ найдены в витрине затрат.` },
-    { s: "warn", t: "Двойной счёт заказов в разрезах", v: `${num(sum(M.eoList, r => r.o))} против ${num(M.cov.orders.src)} в источнике`, d: "Один заказ может относиться к нескольким единицам оборудования и попадать в несколько срезов. Считать «количество заказов» суммированием по разрезам нельзя — в интерфейсе такие поля названы «заказо-строки»." }
+    { s: "warn", t: "Двойной счёт заказов в разрезах", v: `${num(sum(M.eoList, r => r.o))} против ${num(M.cov.orders.src)} в источнике`, d: "Один заказ может относиться к нескольким единицам оборудования и попадать в несколько срезов. Считать «количество заказов» суммированием по разрезам нельзя — в интерфейсе такие поля названы «заказо-строки»." },
+    { s: "bad", t: "Треть последнего планового года — без единицы оборудования", v: (() => { const p = compareYears(); if (!p) return "—"; const ub = unassignedBreakdown(p[1], new Set()); return pct(ub.total ? 100 * ub.unTot / ub.total : 0) + " плана " + p[1]; })(), d: "Разбор позаказно, шаблонное ценообразование и полностью пустые заказы — на вкладке «План N → N+1» (кнопка в навигации сверху)." }
   ];
   const yrows = M.years.map(y => {
     const i = M.yearInfo[y];
@@ -2454,6 +2805,14 @@ function renderTab() {
   host.innerHTML = "";
   const fn = PANES[TAB];
   if (fn) { try { fn(host); } catch (e) { host.innerHTML = callout("bad", "Не удалось построить вкладку: " + esc(e && e.message || e)); console.error(e); } }
+  renderCtx();
+}
+function renderCtx() {
+  const box = document.getElementById("ctxbar");
+  if (!box) return;
+  if (SEL.eo) box.innerHTML = `<span>Открыта единица:</span> <b>${esc(SEL.eo.e)}</b><span class="x" data-ctxclear="eo" title="Закрыть"><svg><use href="#i-x"/></svg></span>`;
+  else if (SEL.order) box.innerHTML = `<span>Открыт заказ:</span> <b>${esc(SEL.order)}</b><span class="x" data-ctxclear="order" title="Закрыть"><svg><use href="#i-x"/></svg></span>`;
+  else box.innerHTML = "";
 }
 function setTab(t) {
   if (!PANES[t]) t = "sum";
@@ -2472,8 +2831,10 @@ function refresh() {
   renderPerimeter();
   renderKpis();
   renderTab();
+  updatePrintCtx();
   const st = detState();
   if (st && TAB === "ord") loadDetail(st, null);
+  saveState();
 }
 const refreshSoon = debounce(refresh, 60);
 
@@ -2557,6 +2918,122 @@ function applyQuick(kind, raw) {
   }
 }
 
+/* ---------- Глобальный поиск в шапке ---------- */
+function globalSearch(qraw) {
+  const q = (qraw || "").trim().toLowerCase();
+  const out = {};
+  if (q.length < 2) return out;
+  const ords = (typeof findOrders === "function" ? findOrders(q) : []).slice(0, 8);
+  if (ords.length) out.orders = ords.map(o => ({ label: o.o, sub: o.e || "", go: () => pickOrder(o.o) }));
+
+  const eoSeen = new Set(), eoHits = [];
+  for (const r of M.eoList) {
+    if (eoHits.length >= 8) break;
+    if (!r.e || r.e === "Не присвоено" || eoSeen.has(r.e)) continue;
+    if (r.e.toLowerCase().includes(q)) { eoSeen.add(r.e); eoHits.push({ label: r.e, sub: M.sites[r.s] || r.s, go: () => { SEL.eo = { e: r.e, s: r.s }; setTab("eo"); } }); }
+  }
+  if (eoHits.length) out.equip = eoHits;
+
+  const modHits = modelPool().filter(m => m.toLowerCase().includes(q)).slice(0, 6);
+  if (modHits.length) out.models = modHits.map(m => ({ label: m, sub: "модель", go: () => { F.models.add(m); setTab("eo"); refresh(); } }));
+
+  const gHits = garagePool().filter(g => String(g).toLowerCase().includes(q)).slice(0, 6);
+  if (gHits.length) out.garages = gHits.map(g => ({ label: String(g), sub: "гараж", go: () => { F.garages.add(String(g)); setTab("eo"); refresh(); } }));
+
+  const compHits = (M.mtrCat || []).filter(c => (c.c || "").toLowerCase().includes(q)).slice(0, 6);
+  if (compHits.length) out.comps = compHits.map(c => ({ label: c.c, sub: c.g || "", go: () => { QMTR = c.c; setTab("mtr"); } }));
+
+  const oem = OEMIDX.oem || [], cs = OEMIDX.c || [];
+  const catSeen = new Set(), catHits = [];
+  for (let i = 0; i < oem.length && catHits.length < 6; i++) {
+    const o = String(oem[i]);
+    if (o.toLowerCase().includes(q) && !catSeen.has(o)) { catSeen.add(o); catHits.push({ label: o, sub: cs[i], go: () => { QCAT = o; setTab("mtr"); } }); }
+  }
+  if (catHits.length) out.catalog = catHits;
+  return out;
+}
+const GROUP_LABELS = [["orders", "Заказы"], ["equip", "Единицы оборудования"], ["models", "Модели"], ["garages", "Гаражные номера"], ["comps", "Компоненты ЕКМТР"], ["catalog", "Каталожные номера"]];
+function renderGlobalHits(q) {
+  const box = document.getElementById("gHits");
+  if (!box) return;
+  if (!q || q.trim().length < 2) { box.hidden = true; box.innerHTML = ""; return; }
+  const res = globalSearch(q);
+  let html = "", any = false;
+  GROUP_LABELS.forEach(([k, label]) => {
+    const items = res[k]; if (!items || !items.length) return;
+    any = true;
+    html += `<div class="grp">${esc(label)}</div>`;
+    items.forEach((it, i) => { html += `<div class="it" data-gk="${k}" data-gi="${i}"><span>${esc(trunc(it.label, 46))}</span><small>${esc(it.sub || "")}</small></div>`; });
+  });
+  box.innerHTML = any ? html : `<div class="none">Ничего не найдено для «${esc(q)}»</div>`;
+  box.hidden = false;
+  box.__res = res;
+}
+
+/* ---------- Скопировать сводку ---------- */
+async function copySummary() {
+  const tiles = [...document.querySelectorAll("#kpis .kpi")];
+  const lines = tiles.map(t => {
+    const l = (t.querySelector(".l") || {}).textContent || "";
+    const v = (t.querySelector(".v") || {}).textContent || "";
+    const s2 = (t.querySelector(".s") || {}).textContent || "";
+    return `${l.trim()}: ${v.trim()}${s2.trim() ? " (" + s2.trim() + ")" : ""}`;
+  });
+  const chipsTxt = (document.getElementById("chips") || {}).innerText || "";
+  const text = `ТОиР · сводка · ${new Date().toLocaleString("ru-RU")}\n${chipsTxt.trim()}\n\n${lines.join("\n")}`;
+  try {
+    await navigator.clipboard.writeText(text);
+    flashCopyOk();
+  } catch (e) {
+    console.warn("Буфер обмена недоступен:", e);
+  }
+}
+function flashCopyOk() {
+  const b = document.getElementById("btnCopy");
+  if (!b) return;
+  const svg = b.querySelector("svg");
+  const prev = svg ? svg.innerHTML : "";
+  b.classList.add("ok");
+  if (svg) svg.innerHTML = '<use href="#i-check"/>';
+  setTimeout(() => { b.classList.remove("ok"); if (svg) svg.innerHTML = prev; }, 1500);
+}
+
+/* ---------- Память фильтров между перезагрузками (sessionStorage) ------
+   Хранится только на вкладке браузера: обновление F5 не сбрасывает срез,
+   но новая вкладка/сессия стартует с чистого листа, как и раньше. --- */
+const STATE_KEY = "topo-filters-v1";
+function saveState() {
+  try {
+    sessionStorage.setItem(STATE_KEY, JSON.stringify({
+      sites: [...F.sites], years: [...F.years], methods: [...F.methods], fleets: [...F.fleets],
+      works: [...F.works], kcls: [...F.kcls], makers: [...F.makers], models: [...F.models], garages: [...F.garages],
+      mFrom: F.mFrom, mTo: F.mTo, opt: { ...OPT }, tab: TAB
+    }));
+  } catch (e) { /* приватный режим/квота — не критично */ }
+}
+function loadState() {
+  try {
+    const raw = sessionStorage.getItem(STATE_KEY);
+    if (!raw) return;
+    const s = JSON.parse(raw);
+    const fill = (set, arr, valid) => (arr || []).forEach(v => { if (!valid || valid.has(v)) set.add(v); });
+    fill(F.sites, s.sites, new Set(Object.keys(M.sites)));
+    fill(F.years, s.years, new Set(M.years));
+    fill(F.methods, s.methods, new Set(M.methods));
+    fill(F.fleets, s.fleets); fill(F.works, s.works); fill(F.kcls, s.kcls);
+    fill(F.makers, s.makers); fill(F.models, s.models); fill(F.garages, s.garages);
+    F.mFrom = s.mFrom || ""; F.mTo = s.mTo || "";
+    if (s.opt) Object.assign(OPT, s.opt);
+    if (s.tab && PANES[s.tab] && !location.hash) TAB = s.tab;
+  } catch (e) { /* повреждённое состояние — просто игнорируем */ }
+}
+function syncStaticInputs() {
+  const set = (id, v, prop) => { const el = document.getElementById(id); if (el) el[prop || "checked"] = v; };
+  set("optMerge", OPT.merge); set("optComparable", OPT.comparable); set("optClosed", OPT.closed);
+  set("optExclUnassigned", OPT.excludeUnassigned);
+  set("mFrom", F.mFrom, "value"); set("mTo", F.mTo, "value");
+}
+
 function wire() {
   const side = document.getElementById("side");
   side.addEventListener("change", e => {
@@ -2577,6 +3054,7 @@ function wire() {
     if (e.target.id === "optMerge") { OPT.merge = e.target.checked; refresh(); return; }
     if (e.target.id === "optComparable") { OPT.comparable = e.target.checked; refresh(); return; }
     if (e.target.id === "optClosed") { OPT.closed = e.target.checked; refresh(); return; }
+    if (e.target.id === "optExclUnassigned") { OPT.excludeUnassigned = e.target.checked; refresh(); return; }
   });
   side.addEventListener("input", debounce(e => {
     const q = e.target.closest("input[data-fq]");
@@ -2602,6 +3080,7 @@ function wire() {
   document.getElementById("tabs").addEventListener("click", e => {
     const b = e.target.closest("button[data-t]"); if (b) setTab(b.dataset.t);
   });
+
   document.getElementById("chips").addEventListener("click", e => {
     const g = e.target.closest("[data-chipg]");
     if (g) { const gr = (document.getElementById("chips").__groups || [])[+g.getAttribute("data-chipg")]; if (gr) gr.set.clear(); refresh(); return; }
@@ -2624,6 +3103,22 @@ function wire() {
     const mf = e.target.closest("#mfilters");
     if (mf) { document.body.classList.toggle("faside"); return; }
     if (document.body.classList.contains("faside") && !e.target.closest("aside")) document.body.classList.remove("faside");
+    const cc = e.target.closest("[data-ctxclear]");
+    if (cc) { const k = cc.getAttribute("data-ctxclear"); if (k === "eo") SEL.eo = null; if (k === "order") SEL.order = null; renderTab(); return; }
+    const hit = e.target.closest("#gHits .it");
+    if (hit) {
+      const box = document.getElementById("gHits");
+      const items = (box.__res || {})[hit.getAttribute("data-gk")] || [];
+      const it = items[+hit.getAttribute("data-gi")];
+      if (it && it.go) it.go();
+      box.hidden = true; box.innerHTML = "";
+      const gs = document.getElementById("gSearch"); if (gs) gs.blur();
+      return;
+    }
+    if (!e.target.closest("#gSearch, #gHits")) { const box = document.getElementById("gHits"); if (box) { box.hidden = true; } }
+    if (e.target.closest("#btnCopy")) { copySummary(); return; }
+    const goto = e.target.closest("[data-goto]");
+    if (goto) { setTab(goto.getAttribute("data-goto")); return; }
   });
   document.addEventListener("input", debounce(e => {
     if (e.target && e.target.id === "qOrd") { QORD = e.target.value; renderTab(); const q = document.getElementById("qOrd"); if (q) { q.focus(); q.setSelectionRange(q.value.length, q.value.length); } }
@@ -2637,8 +3132,29 @@ function wire() {
   });
   window.addEventListener("hashchange", () => { const t = location.hash.replace("#", ""); if (PANES[t] && t !== TAB) setTab(t); });
   document.addEventListener("keydown", e => {
-    if (e.key === "Escape") { document.body.classList.remove("faside"); }
+    if (e.key === "Escape") {
+      document.body.classList.remove("faside");
+      const box = document.getElementById("gHits"); if (box) box.hidden = true;
+      if (document.activeElement && document.activeElement.id === "gSearch") document.activeElement.blur();
+      return;
+    }
+    const tag = (e.target && e.target.tagName || "").toLowerCase();
+    const typing = tag === "input" || tag === "textarea" || (e.target && e.target.isContentEditable);
+    if (e.key === "/" && !typing) { e.preventDefault(); const gs = document.getElementById("gSearch"); if (gs) gs.focus(); return; }
+    if (typing) return;
+    if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+      const btns = [...document.querySelectorAll("#tabs button")];
+      const idx = btns.findIndex(b => b.classList.contains("on"));
+      if (idx < 0) return;
+      const next = e.key === "ArrowRight" ? Math.min(btns.length - 1, idx + 1) : Math.max(0, idx - 1);
+      if (next !== idx) setTab(btns[next].dataset.t);
+    }
   });
+  const gs = document.getElementById("gSearch");
+  if (gs) {
+    gs.addEventListener("input", debounce(e => renderGlobalHits(e.target.value), 150));
+    gs.addEventListener("focus", e => { if (e.target.value.trim().length >= 2) renderGlobalHits(e.target.value); });
+  }
 }
 
 /* --- загрузка с индикатором --- */
@@ -2675,9 +3191,11 @@ function finishBoot(cube, ktg) {
   if (sub) sub.textContent = `SAP PM-M06 · ${M.years[0]}–${M.years[M.years.length - 1]} · ${num(sum(M.combo, r => r.n))} строк`;
   const nm = document.getElementById("noteMerge");
   if (nm) nm.textContent = `Наименования исполнителей и рабочих мест усечены до ${M.vendorCap} символов — ${M.vendorCut} из ${M.vendorRaw} написаний упираются в этот предел. Склейка по всем справочникам сводит их к ${M.vendorMerged} контрагентам.`;
+  loadState();
   wire();
+  syncStaticInputs();
   const hash = location.hash.replace("#", "");
-  TAB = PANES[hash] ? hash : "sum";
+  TAB = PANES[hash] ? hash : (PANES[TAB] ? TAB : "sum");
   document.querySelectorAll("#tabs button").forEach(b => b.classList.toggle("on", b.dataset.t === TAB));
   setBoot(100, "готово");
   refresh();

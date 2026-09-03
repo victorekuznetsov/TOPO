@@ -189,6 +189,7 @@ select{cursor:pointer}
 .qf-drop .it:hover{background:var(--surface-2);color:var(--ink)}
 .qf-drop .it small{color:var(--ink-4);font-size:11px;flex:0 0 auto}
 .qf-drop .none{padding:8px 10px;font-size:11.5px;color:var(--ink-4)}
+mark.hit{background:var(--accent-soft);color:var(--accent);padding:0 3px;border-radius:3px;font-weight:600}
 
 /* ---------- KPI ---------- */
 .kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(168px,1fr));gap:10px;margin-bottom:14px}
@@ -545,6 +546,25 @@ function downloadCSV(name, header, rows, ctxLine) {
       const f = QF_FIELDS[e.target.id]; if (!f) return;
       if (e.target.value.trim()) renderQfDrop(f[0], e.target.id, f[1]);
     });
+    /* Пункт дропдауна выбираем по mousedown, а не click: click срабатывает
+       только после mouseup, а между mousedown и mouseup вполне успевает
+       выстрелить отложенный (debounce 150 мс) ре-рендер дропдауна от
+       предыдущего нажатия клавиши — innerHTML пересобирается, старый
+       DOM-узел под курсором исчезает, и click на него уже не приходит.
+       mousedown фиксирует выбор до того, как эта гонка успевает случиться. */
+    qf.addEventListener("mousedown", e => {
+      const it = e.target.closest(".qf-drop .it");
+      if (!it) return;
+      e.preventDefault();
+      const box = it.closest(".qf-drop");
+      const item = (box.__items || [])[+it.getAttribute("data-qi")];
+      box.hidden = true; box.innerHTML = ""; box.__items = null;
+      if (item) {
+        if (item.kind === "model") pickModel(item.val);
+        else if (item.kind === "garage") pickGarage(item.val);
+        else if (item.kind === "order") pickOrder(item.val);
+      }
+    });
     qf.addEventListener("click", e => {
       const h = e.target.closest("[data-qkind]");
       if (h) {
@@ -553,17 +573,6 @@ function downloadCSV(name, header, rows, ctxLine) {
         if (k === "garage") pickGarage(v);
         if (k === "order") pickOrder(v);
         return;
-      }
-      const it = e.target.closest(".qf-drop .it");
-      if (it) {
-        const box = it.closest(".qf-drop");
-        const item = (box.__items || [])[+it.getAttribute("data-qi")];
-        if (item) {
-          if (item.kind === "model") pickModel(item.val);
-          else if (item.kind === "garage") pickGarage(item.val);
-          else if (item.kind === "order") pickOrder(item.val);
-        }
-        box.hidden = true; box.innerHTML = "";
       }
     });
     document.addEventListener("click", e => {
@@ -2568,11 +2577,10 @@ PANES.ord = function (host) {
         if (F.methods.size && !F.methods.has(u) && !(F.methods.has("Хозспособ") && u === "ХС") && !(F.methods.has("Комбинированный") && u === "Комб")) continue;
         if (F.works.size && !F.works.has(w2)) continue;
         if (q && !((o + " " + e + " " + c).toLowerCase().includes(q))) continue;
-        if (!lineMatchesMtr(c)) continue;
         let x = lines.get(o);
         if (!x) lines.set(o, x = { o, e, w: w2, u, p: 0, a: 0, up: 0, uf: 0, n: 0, rows: [] });
         x.p += d.p[i] || 0; x.a += d.a[i] || 0; x.up += d.up[i] || 0; x.uf += d.uf[i] || 0; x.n++;
-        x.rows.push({ c, qp: d.qp[i], qf: d.qf[i], p: d.p[i], a: d.a[i], up: d.up[i], uf: d.uf[i] });
+        x.rows.push({ c, qp: d.qp[i], qf: d.qf[i], p: d.p[i], a: d.a[i], up: d.up[i], uf: d.uf[i], matched: (QMTR || QCAT) ? lineMatchesMtr(c) : false });
         if (e) x.e = e;
       }
     });
@@ -2613,33 +2621,48 @@ PANES.ord = function (host) {
     });
     orders.forEach(o => {
       if (o.rows && o.rows.length) return;
-      o.rows = (byEo.get(eoKey(o.e)) || []).map(r => ({ c: r.c, qp: r.qp, qf: r.qf, p: r.p, a: r.a, up: 0, uf: 0, eoLevel: true }));
+      o.rows = (byEo.get(eoKey(o.e)) || []).map(r => ({ c: r.c, qp: r.qp, qf: r.qf, p: r.p, a: r.a, up: 0, uf: 0, eoLevel: true, matched: (QMTR || QCAT) ? lineMatchesMtr(r.c) : false }));
       if (o.rows.length) eoLevelComps = true;
     });
   }
-  if (QMTR || QCAT) {
-    orders = orders.filter(o => {
-      const rows = (o.rows || []).filter(r => lineMatchesMtr(r.c));
-      if (!rows.length) return false;
-      o.rows = rows;
-      if (!eoLevelComps) o.n = rows.length;
-      return true;
-    });
-  }
+  /* Ищем каталожный № / ЕКМТР — заказ остаётся в списке, если среди его
+     позиций есть хоть одно совпадение, но состав заказа справа показываем
+     ПОЛНОСТЬЮ (не только совпавшие строки): пользователю нужно видеть
+     искомую деталь в контексте остального состава, а не вырванной. Каждая
+     строка несёт флаг matched — искомое подсвечивается в таблице ниже. */
+  if (QMTR || QCAT) orders = orders.filter(o => (o.rows || []).some(r => r.matched));
   orders.forEach(o => { o.tp = o.p + o.up; o.ta = o.a + o.uf; o.ex = o.tp ? 100 * o.ta / o.tp : null; });
   orders.sort((a, b) => (b.tp + b.ta) - (a.tp + a.ta));
+  const cur = orders.find(o => o.o === SEL.order);
   const t = { p: sum(orders, o => o.p), a: sum(orders, o => o.a), up: sum(orders, o => o.up), uf: sum(orders, o => o.uf), n: sum(orders, o => o.n) };
   const mtrNote = (QMTR || QCAT)
     ? `отбор по ${QCAT ? "каталожному № «" + QCAT + "»" : "ЕКМТР «" + QMTR + "»"}${eoLevelComps ? " — на уровне единицы оборудования" : ""}`
     : (source === "detail" ? "полная детализация площадки и года" : "встроенный срез куба");
-  document.getElementById("ordKpi").innerHTML = kpi([
-    { l: "Заказов", v: num(orders.length), s: mtrNote, tone: "accent" },
-    source === "detail"
-      ? { l: "Строк компонентов", v: num(t.n), s: "привязаны к конкретным заказам" }
-      : { l: "Позиций ЕКМТР в срезе", v: num(linesInSlice), s: "известна единица, но не номер заказа", tone: "warn" },
-    { l: "План ТОиР", v: shortR(t.p + t.up), s: `МТР ${short(t.p)} · УСО ${short(t.up)}` },
-    { l: "Факт ТОиР", v: shortR(t.a + t.uf), s: "исполнение " + pct((t.p + t.up) ? 100 * (t.a + t.uf) / (t.p + t.up) : null) }
-  ]);
+  if (cur) {
+    /* Заказ открыт — блоки показывают суммы ИМЕННО по нему, а не по всей
+       программе в срезе (как раньше), иначе цифры вводят в заблуждение. */
+    const rowsAll = cur.rows || [];
+    const rowsMatched = rowsAll.filter(r => r.matched);
+    document.getElementById("ordKpi").innerHTML = kpi([
+      { l: "Открытый заказ", v: esc(cur.o), s: cur.e ? esc(trunc(cur.e, 34)) : "единица не определена", tone: "accent" },
+      {
+        l: "Компонентов в заказе", v: num(rowsAll.length),
+        s: (QMTR || QCAT) ? `совпало с поиском: ${num(rowsMatched.length)}` : (source === "detail" ? "полный состав заказа" : "на уровне единицы оборудования — не заказа"),
+        tone: (QMTR || QCAT) ? "info" : undefined
+      },
+      { l: "План ТОиР заказа", v: shortR(cur.tp), s: `МТР ${short(cur.p)} · УСО ${short(cur.up)}` },
+      { l: "Факт ТОиР заказа", v: shortR(cur.ta), s: "исполнение " + pct(cur.ex) }
+    ]);
+  } else {
+    document.getElementById("ordKpi").innerHTML = kpi([
+      { l: "Заказов", v: num(orders.length), s: mtrNote, tone: "accent" },
+      source === "detail"
+        ? { l: "Строк компонентов", v: num(t.n), s: "привязаны к конкретным заказам" }
+        : { l: "Позиций ЕКМТР в срезе", v: num(linesInSlice), s: "известна единица, но не номер заказа", tone: "warn" },
+      { l: "План ТОиР", v: shortR(t.p + t.up), s: `МТР ${short(t.p)} · УСО ${short(t.up)}` },
+      { l: "Факт ТОиР", v: shortR(t.a + t.uf), s: "исполнение " + pct((t.p + t.up) ? 100 * (t.a + t.uf) / (t.p + t.up) : null) }
+    ]);
+  }
   const ocols = [
     { k: "o", t: "Заказ", fmt: (v, r) => (r.u === "Не присвоено" && r.w === "Не присвоено" && r.e === "Не присвоено" && r.wc === "Не присвоено") ? `<span class="tag b" title="Способ, работа, единица и исполнитель не назначены">пусто</span> ${esc(v)}` : esc(v) },
     { k: "e", t: "Единица", cls: "name dim" },
@@ -2654,13 +2677,13 @@ PANES.ord = function (host) {
     onRow: r => { SEL.order = SEL.order === r.o ? null : r.o; renderTab(); },
     cols: ocols
   });
-  const cur = orders.find(o => o.o === SEL.order);
   tableView(host.querySelector("#tComp"), {
     id: "tComp", sort: "p", maxH: 480,
-    rows: cur ? cur.rows.map(r => ({ c: r.c, oem: oemOf(r.c), qp: r.qp, qf: r.qf, up: r.qp ? r.p / r.qp : null, ua: r.qf ? r.a / r.qf : null, p: r.p, a: r.a, uso: (r.up || 0) + (r.uf || 0) })) : [],
+    rows: cur ? cur.rows.map(r => ({ c: r.c, matched: !!r.matched, oem: oemOf(r.c), qp: r.qp, qf: r.qf, up: r.qp ? r.p / r.qp : null, ua: r.qf ? r.a / r.qf : null, p: r.p, a: r.a, uso: (r.up || 0) + (r.uf || 0) })) : [],
+    isSel: r => r.matched,
     cols: [
-      { k: "c", t: "Компонент / ЕКМТР", cls: "name" },
-      { k: "oem", t: "Каталожный №", cls: "dim", fmt: v => v ? `<code style="font-size:11px">${esc(v)}</code>` : "—", hint: "Номер детали производителя из справочника oem_idx" },
+      { k: "c", t: "Компонент / ЕКМТР", cls: "name", fmt: (v, r) => r.matched ? `<mark class="hit">${esc(v)}</mark>` : esc(v) },
+      { k: "oem", t: "Каталожный №", cls: "dim", fmt: (v, r) => (v && r.matched && QCAT) ? `<mark class="hit"><code style="font-size:11px">${esc(v)}</code></mark>` : v ? `<code style="font-size:11px">${esc(v)}</code>` : "—", hint: "Номер детали производителя из справочника oem_idx" },
       { k: "qp", t: "Кол. план", n: true, fmt: v => v == null || v === "" ? "—" : num(v) },
       { k: "qf", t: "Кол. факт", n: true, fmt: v => v == null || v === "" ? "—" : num(v) },
       { k: "up", t: "Цена план", n: true, fmt: v => v == null ? "—" : short(v) },
@@ -2670,6 +2693,10 @@ PANES.ord = function (host) {
     ],
     empty: cur ? "У этой единицы нет позиций ЕКМТР во встроенном срезе" : (source === "detail" ? "Выберите заказ слева" : "Выберите заказ слева — покажем позиции его единицы оборудования")
   });
+  if (cur && (QMTR || QCAT)) {
+    host.querySelector("#tComp").insertAdjacentHTML("afterbegin",
+      callout("info", `Показан весь состав заказа ${esc(cur.o)} (${num(cur.rows.length)} позиций) — строки, совпавшие с поиском по ${QCAT ? "каталожному №" : "ЕКМТР"} «${esc(QCAT || QMTR)}», подсвечены.`));
+  }
   if (cur && eoLevelComps) {
     host.querySelector("#tComp").insertAdjacentHTML("afterbegin",
       callout("warn", `Это позиции ЕКМТР <b>единицы оборудования</b> «${esc(cur.e || "")}», а не состав заказа ${esc(cur.o)}: во встроенном срезе номер заказа у позиции не сохранён. Чтобы увидеть состав именно этого заказа, отметьте слева одну площадку и один год — подгрузится полная детализация.`));

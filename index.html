@@ -2742,6 +2742,43 @@ let QORD = "";
 let QMTR = "";
 let QCAT = "";
 let OEMIDX = {oem:[], c:[]};
+let ORDIDX = {combos:[], o:[], c:[], n:0};
+
+/* ---------- Полный указатель заказов (order_idx.json) ------------------
+   Встроенный куб хранит только 70 384 крупнейших заказа из 381 418 —
+   заказ мелкого или среднего объёма в нём просто отсутствует, и поиск
+   по нему бил в пустоту, даже когда заказ абсолютно реален. Указатель
+   знает площадку и год каждого известного заказа; при промахе быстрого
+   поиска он сам отмечает нужную площадку и год и подгружает
+   детализацию — искать заранее известный номер заказа не должно
+   требовать знания, в каком именно файле он лежит. */
+let ORDIDX_MAP = null;
+function ordIdxLookup(raw) {
+  const q = String(raw || "").trim();
+  if (!q) return null;
+  if (!ORDIDX_MAP) {
+    ORDIDX_MAP = new Map();
+    const o = ORDIDX.o || [], c = ORDIDX.c || [];
+    for (let i = 0; i < o.length; i++) ORDIDX_MAP.set(o[i], c[i]);
+  }
+  const code = ORDIDX_MAP.get(q);
+  if (code == null) return null;
+  const combo = (ORDIDX.combos || [])[code];
+  if (!combo) return null;
+  const sep = combo.indexOf("_");
+  return { s: combo.slice(0, sep), y: combo.slice(sep + 1) };
+}
+function jumpToOrder(raw) {
+  const q = String(raw || "").trim();
+  if (!q) return;
+  const hit = ordIdxLookup(q);
+  if (!hit) { showHits(`Заказ «${q}» не найден ни в одном из ${num(ORDIDX.n || 0)} известных заказов выгрузки`, []); return; }
+  F.sites.clear(); F.sites.add(hit.s);
+  F.years.clear(); F.years.add(hit.y);
+  SEL.order = q; QORD = q; QMTR = ""; QCAT = "";
+  setTab("ord");
+  refresh();
+}
 
 /* ---------- Качество данных ---------- */
 PANES.dq = function (host) {
@@ -2928,7 +2965,8 @@ function applyQuick(kind, raw) {
   } else if (kind === "order") {
     const hits = findOrders(raw);
     if (hits.length === 1) pickOrder(hits[0].o);
-    else showHits(hits.length ? "Выберите заказ" : "Заказ не найден в текущем срезе", hits.map(v => ({ kind: "order", val: v.o, label: v.o + (v.e ? " · " + v.e : "") })));
+    else if (hits.length > 1) showHits("Выберите заказ", hits.map(v => ({ kind: "order", val: v.o, label: v.o + (v.e ? " · " + v.e : "") })));
+    else jumpToOrder(raw); // не нашли среди встроенного среза — проверяем полный указатель всех заказов
   }
 }
 
@@ -2939,6 +2977,13 @@ function globalSearch(qraw) {
   if (q.length < 2) return out;
   const ords = (typeof findOrders === "function" ? findOrders(q) : []).slice(0, 8);
   if (ords.length) out.orders = ords.map(o => ({ label: o.o, sub: o.e || "", go: () => pickOrder(o.o) }));
+  /* Точное совпадение по всему указателю заказов (381 418 номеров) —
+     во встроенном срезе живут только 70 384 крупнейших, поэтому заказ
+     среднего объёма выше не найдётся, хотя он абсолютно реален. */
+  if (!ords.some(o => o.o === qraw.trim())) {
+    const hit = ordIdxLookup(qraw);
+    if (hit) (out.orders || (out.orders = [])).push({ label: qraw.trim(), sub: `весь заказ · ${M.sites[hit.s] || hit.s} · ${hit.y}`, go: () => jumpToOrder(qraw) });
+  }
 
   const eoSeen = new Set(), eoHits = [];
   for (const r of M.eoList) {
@@ -3157,6 +3202,7 @@ function wire() {
     if (e.key !== "Enter" || !e.target || e.target.id !== "qOrd") return;
     const hits = findOrders(e.target.value);
     if (hits.length) pickOrder(hits[0].o);
+    else jumpToOrder(e.target.value); // проверяем полный указатель заказов, если во встроенном срезе не нашлось
   });
   window.addEventListener("hashchange", () => { const t = location.hash.replace("#", ""); if (PANES[t] && t !== TAB) setTab(t); });
   document.addEventListener("keydown", e => {
@@ -3264,14 +3310,15 @@ function showLocalOpen(reason) {
 async function boot() {
   try {
     setBoot(2, "загрузка витрины затрат…");
-    const cube = await fetchJSON("cube.json", "витрина затрат", 2, 78);
-    setBoot(80, "построение модели…");
+    const cube = await fetchJSON("cube.json", "витрина затрат", 2, 70);
+    setBoot(72, "построение модели…");
     await new Promise(r => setTimeout(r, 0));
     let ktg = null;
-    try { ktg = await fetchJSON("ktg.json", "готовность парка (КТГ)", 84, 96); } catch (e) { console.warn("КТГ не загружен:", e); }
-    try { OEMIDX = await fetchJSON("oem_idx.json", "каталожные номера", 96, 98); } catch (e) { console.warn("oem_idx:", e); }
+    try { ktg = await fetchJSON("ktg.json", "готовность парка (КТГ)", 74, 86); } catch (e) { console.warn("КТГ не загружен:", e); }
+    try { OEMIDX = await fetchJSON("oem_idx.json", "каталожные номера", 86, 92); } catch (e) { console.warn("oem_idx:", e); }
     buildOemIndex();
-    setBoot(97, "связывание готовности и затрат…");
+    try { ORDIDX = await fetchJSON("order_idx.json", "указатель заказов", 92, 98); } catch (e) { console.warn("order_idx:", e); }
+    setBoot(98, "связывание готовности и затрат…");
     finishBoot(cube, ktg);
   } catch (e) {
     console.error(e);

@@ -413,6 +413,7 @@ body.ready #boot{display:none}
   <div class="fgroup" data-f="makers"><button class="fhead" type="button"><svg class="caret"><use href="#i-caret"/></svg>Производитель<span class="cnt"></span></button><div class="fbody"></div></div>
   <div class="fgroup" data-f="models"><button class="fhead" type="button"><svg class="caret"><use href="#i-caret"/></svg>Модель<span class="cnt"></span></button><div class="fbody"></div></div>
   <div class="fgroup" data-f="garages"><button class="fhead" type="button"><svg class="caret"><use href="#i-caret"/></svg>Гаражный номер<span class="cnt"></span></button><div class="fbody"></div></div>
+  <div class="fgroup" data-f="contractors"><button class="fhead" type="button"><svg class="caret"><use href="#i-caret"/></svg>Подрядчик<span class="cnt"></span></button><div class="fbody"></div></div>
 
   <div class="fgroup open" data-f="opts"><button class="fhead" type="button"><svg class="caret"><use href="#i-caret"/></svg>Методика<span class="cnt"></span></button>
     <div class="fbody">
@@ -969,7 +970,7 @@ const DET_AUTO_CAP = 6;
 const DET_AVG_MB = 7;
 const DET_CACHE_CAP = 10;
 const M = {};
-const F = { sites: new Set(), years: new Set(), methods: new Set(), fleets: new Set(), works: new Set(), kcls: new Set(), makers: new Set(), models: new Set(), garages: new Set(), mFrom: "", mTo: "" };
+const F = { sites: new Set(), years: new Set(), methods: new Set(), fleets: new Set(), works: new Set(), kcls: new Set(), makers: new Set(), models: new Set(), garages: new Set(), contractors: new Set(), mFrom: "", mTo: "" };
 const OPT = { merge: true, comparable: false, closed: false, excludeUnassigned: false };
 let TAB = "sum";
 const SEL = { eo: null, order: null, vendor: null };
@@ -1455,14 +1456,17 @@ function csvContext() {
   if (F.works.size) bits.push("работа: " + [...F.works].join(", "));
   return "ТОиР · " + bits.join(" · ");
 }
-function exportTable(host, name) {
+function exportTable(host, name, mode) {
   const s = host && host.__spec; if (!s) return;
-  const rows = (host.__all || []).map(r => s.cols.map(c => {
+  /* mode="plan"/"fact" отсекает колонки с противоположной пометкой c.pf —
+     остальные (без пометки — названия, даты, доли и т.п.) остаются всегда. */
+  const cols = (mode && mode !== "both") ? s.cols.filter(c => !c.pf || c.pf === mode) : s.cols;
+  const rows = (host.__all || []).map(r => cols.map(c => {
     const v = r[c.k];
     if (c.n) return v == null ? "" : String(v).replace(".", ",");
     return c.raw ? c.raw(v, r) : (v == null ? "" : v);
   }));
-  downloadCSV(name, s.cols.map(c => c.t), rows, csvContext());
+  downloadCSV(name, cols.map(c => c.t), rows, csvContext());
 }
 function card(title, hint, bodyId, opts) {
   opts = opts || {};
@@ -1473,6 +1477,9 @@ function card(title, hint, bodyId, opts) {
   </div>`;
 }
 const dlBtn = id => `<button class="minibtn" data-dl="${id}" title="Выгрузить CSV">CSV</button>`;
+/* Кнопка CSV с выбором «план / факт / оба» — для таблиц, где колонки
+   помечены { pf: "plan" | "fact" } (см. exportTable). */
+const dlBtnPF = id => `<select class="minibtn" data-dl-mode="${id}" title="Что включать в выгрузку"><option value="both">план и факт</option><option value="plan">только план</option><option value="fact">только факт</option></select> <button class="minibtn" data-dl="${id}" title="Выгрузить CSV">CSV</button>`;
 function callout(kind, html) {
   const ic = kind === "warn" || kind === "bad" ? "i-warn" : "i-info";
   return `<div class="callout ${kind}"><svg class="ic"><use href="#${ic}"/></svg><div>${html}</div></div>`;
@@ -1491,7 +1498,11 @@ const FDEF = {
   kcls: { set: () => F.kcls, items: () => M.ktgClasses || [], label: v => v, note: () => "Справочник классов КТГ не пересекается с группами МВЗ — связь строится по совпадению единиц оборудования (" + num(M.ktgMatched || 0) + " из " + num((M.ktg || []).length) + ")." },
   makers: { set: () => F.makers, items: () => M.ktgMakers || [], label: v => v, search: true },
   models: { set: () => F.models, items: () => modelPool(), label: v => v, search: true },
-  garages: { set: () => F.garages, items: () => garagePool(), label: v => v, search: true, all: true }
+  garages: { set: () => F.garages, items: () => garagePool(), label: v => v, search: true, all: true },
+  contractors: {
+    set: () => F.contractors, items: () => contractorPool(), label: v => v, search: true,
+    note: () => "Подрядчик есть только там, где он указан в источнике: заказы (встроенный срез крупнейших) и контрагенты УСО. На полную детализацию «заказ → компонент» (вкладка «Заказы» с полной детализацией) и на сводные вкладки (Сводка, Динамика, КТГ × затраты) этот фильтр не действует — там нет такого измерения."
+  }
 };
 function modelPool() {
   const s = new Set();
@@ -1521,6 +1532,20 @@ function garagePool() {
     s.add(String(r.gn));
   });
   return [...s].sort((a, b) => String(a).localeCompare(String(b), "ru", { numeric: true }));
+}
+function contractorPool() {
+  const s = new Set();
+  (M.orders || []).forEach(r => {
+    if (!r.wc) return;
+    if (F.sites.size && !F.sites.has(r.s)) return;
+    s.add(vendor(r.wc));
+  });
+  (M.uso || []).forEach(r => {
+    if (!r.name) return;
+    if (F.sites.size && !F.sites.has(r.s)) return;
+    s.add(vendor(r.name));
+  });
+  return [...s].sort((a, b) => a.localeCompare(b, "ru"));
 }
 const FQ = {};
 function buildSidebar() {
@@ -1555,7 +1580,7 @@ function buildSidebar() {
   const mf = document.getElementById("mfCnt"); if (mf) mf.textContent = n ? "Фильтры · " + n : "Фильтры";
 }
 function countFilters() {
-  return F.sites.size + F.years.size + F.methods.size + F.fleets.size + F.works.size + F.kcls.size + F.makers.size + F.models.size + F.garages.size + (F.mFrom ? 1 : 0) + (F.mTo ? 1 : 0);
+  return F.sites.size + F.years.size + F.methods.size + F.fleets.size + F.works.size + F.kcls.size + F.makers.size + F.models.size + F.garages.size + F.contractors.size + (F.mFrom ? 1 : 0) + (F.mTo ? 1 : 0);
 }
 function updatePrintCtx() {
   const el = document.querySelector("main");
@@ -1578,6 +1603,7 @@ function renderChips() {
   add("производитель", F.makers);
   add("модель", F.models);
   add("гараж", F.garages);
+  add("подрядчик", F.contractors);
   let html = bits.map((b, i) => `<span class="chip"><span>${esc(b.label)}</span><b>${esc(trunc(b.txt, 34))}</b><span class="x" data-chip="${i}" title="Убрать">×</span></span>`).join("");
   html += groups.map((g, i) => `<span class="chip" title="${esc([...g.set].slice(0, 40).join(", "))}"><span>${esc(g.label)}</span><b>${g.n} значений</b><span class="x" data-chipg="${i}" title="Снять весь фильтр">×</span></span>`).join("");
   if (F.mFrom || F.mTo) html += `<span class="chip"><span>период</span><b>${esc(F.mFrom || "…")} — ${esc(F.mTo || "…")}</b><span class="x" data-chip="m" title="Убрать">×</span></span>`;
@@ -2254,7 +2280,7 @@ PANES.ktg = function (host) {
 
 /* ---------- Контрагенты УСО ---------- */
 PANES.uso = function (host) {
-  const src = M.uso.filter(passSlice);
+  const src = M.uso.filter(passSlice).filter(r => !F.contractors.size || F.contractors.has(vendor(r.name)));
   const m = new Map();
   src.forEach(r => {
     const nm = vendor(r.name);
@@ -2281,7 +2307,7 @@ PANES.uso = function (host) {
       : callout("warn", "Склейка написаний выключена: один и тот же контрагент считается несколько раз (например «Сумитек Интернейшнл», «СУМИТЕК ИНТЕРНЕЙШНЛ», «ООО «Сумитек Интерне»). Показатели концентрации занижены.")) +
     (eoFilteredUso ? callout("warn", `Витрина контрагентов УСО сохранена в кубе по контрагенту, площадке и году — <b>без разреза по парку и единице оборудования</b>, поэтому фильтры парка, класса техники, производителя, модели и гаражного номера на неё не действуют (площадка и год — действуют).`) : "") +
     `<div class="grid">${card("Парето по факту УСО", "20 крупнейших контрагентов и накопленная доля", "cPar", { foot: "Столбцы до линии 80% окрашены брендовым цветом — это контрагенты, формирующие основную часть затрат на подряд." })}</div>
-     <div class="grid">${card("Контрагенты", "план, факт и исполнение договоров", "tUso", { tools: dlBtn("tUso") })}</div>`;
+     <div class="grid">${card("Контрагенты", "план, факт и исполнение договоров", "tUso", { tools: dlBtnPF("tUso") })}</div>`;
   document.getElementById("usoKpi").innerHTML = kpi([
     { l: "Контрагентов", v: num(rows.length), s: OPT.merge ? `склеено из ${num(rawNames)} написаний в срезе` : "без склейки написаний", tone: "accent" },
     { l: "Факт УСО", v: shortR(totF), s: `план ${short(totP)} · исполнение ${pct(totP ? 100 * totF / totP : null)}` },
@@ -2296,8 +2322,8 @@ PANES.uso = function (host) {
       { k: "forms", t: "Написаний", n: true, fmt: v => v > 1 ? `<span class="tag w">${v}</span>` : `<span class="tag n">1</span>`, hint: "Сколько вариантов написания склеено в одного контрагента" },
       { k: "sites", t: "Площадки", cls: "dim name" },
       { k: "years", t: "Годы", cls: "dim" },
-      { k: "up", t: "План УСО", n: true, fmt: shortR },
-      { k: "uf", t: "Факт УСО", n: true, fmt: shortR },
+      { k: "up", t: "План УСО", n: true, fmt: shortR, pf: "plan" },
+      { k: "uf", t: "Факт УСО", n: true, fmt: shortR, pf: "fact" },
       { k: "ex", t: "Исполнение", n: true, fmt: v => v == null ? "—" : `<span class="tag ${v >= 90 && v <= 110 ? "g" : v > 110 ? "b" : "w"}">${pct(v)}</span>` }
     ],
     foot: { name: "Итого", up: shortR(totP), uf: shortR(totF), ex: pct(totP ? 100 * totF / totP : null) }
@@ -2337,6 +2363,7 @@ PANES.mtr = function (host) {
   host.innerHTML =
     `<div class="kpis" id="mtrKpi"></div>` +
     callout("info", `Витрина позиций МТР охватывает <b>${shortR(totP)}</b> плана — это ${pct(slicesP ? 100 * totP / slicesP : 0)} плана МТР по площадкам и годам среза. Остальное приходится на позиции вне ${num(M.mat.length)} сохранённых срезов. Суммы ниже — по покрытой части, а не по всему плану.`) +
+    (F.contractors.size ? callout("warn", `Фильтр «Подрядчик» на эту вкладку не действует — ни позиции МТР, ни компоненты ЕКМТР по единицам оборудования не хранят исполнителя. Подрядчик есть в заказах (вкладка «Заказы») и в контрагентах УСО.`) : "") +
     (eoFiltered ? callout("warn", `Таблица «Позиции МТР» и ABC ниже сохранены в кубе по наименованию, площадке и году — <b>без разреза по единице оборудования</b>, поэтому фильтры класса техники, производителя, модели и гаражного номера на них не действуют (площадка и год — действуют). Доля выше тоже посчитана без этих фильтров, иначе при узком фильтре по модели знаменатель схлопывается и доля улетает за сотни процентов. Таблица «Компоненты ЕКМТР по единицам оборудования» ниже эти фильтры поддерживает.`) : "") +
     `<div class="quickfind" style="margin-bottom:12px">
       <label>ЕКМТР<input type="search" id="qMtr" placeholder="наименование компонента" value="${esc(QMTR)}"></label>
@@ -2429,7 +2456,7 @@ PANES.eo = function (host) {
   const t = { p: sum(rows, r => r.p), a: sum(rows, r => r.a), up: sum(rows, r => r.up), uf: sum(rows, r => r.uf), o: sum(rows, r => r.o) };
 
   let ords = [];
-  if (sel) ords = M.orders.filter(r => eoKey(r.e) === sel.k && YS.has(String(r.y)) && (!F.sites.size || F.sites.has(r.s)) && (!F.methods.size || F.methods.has(r.u)) && (!F.works.size || F.works.has(r.w)) && inMonth(r.m))
+  if (sel) ords = M.orders.filter(r => eoKey(r.e) === sel.k && YS.has(String(r.y)) && (!F.sites.size || F.sites.has(r.s)) && (!F.methods.size || F.methods.has(r.u)) && (!F.works.size || F.works.has(r.w)) && (!F.contractors.size || F.contractors.has(vendor(r.wc))) && inMonth(r.m))
     .map(r => ({ o: r.o, m: r.m, u: r.u, w: r.w, wc: vendor(r.wc), p: r.p, a: r.a, up: r.up, uf: r.uf }))
     .sort((a, b) => (b.p + b.a + b.uf) - (a.p + a.a + a.uf));
 
@@ -2501,6 +2528,7 @@ PANES.vmz = function (host) {
     `<div class="kpis" id="vmzKpi"></div>` +
     callout("info", `ВМЗ — внутренние места возникновения затрат (хозспособ и комбинированный ремонт). Витрина покрывает ${shortR(M.cov.vmz.p)} плана МТР против ${shortR(M.cov.totals.p)} всего плана (${pct(100 * M.cov.vmz.share)}); остаток относится к заказам без назначенного внутреннего рабочего места.`) +
     (eoFiltered ? callout("warn", `Таблица ниже сохранена в кубе по подразделению, площадке, году и парку — <b>без разреза по единице оборудования</b>, поэтому фильтры класса техники, производителя, модели и гаражного номера на неё не действуют (площадка, год и парк — действуют).`) : "") +
+    (F.contractors.size ? callout("warn", `Фильтр «Подрядчик» на эту вкладку не действует: ВМЗ — это хозспособ и комбинированный ремонт, подрядчик у таких работ по определению не назначен.`) : "") +
     `<div class="grid">${card("Крупнейшие внутренние подразделения", "план и факт МТР", "cVmz")}</div>
      <div class="grid">${card("Внутренние места возникновения затрат", "по площадке, году и парку среза — без разреза по единице оборудования", "tVmz", { tools: dlBtn("tVmz") })}</div>`;
   document.getElementById("vmzKpi").innerHTML = kpi([
@@ -2638,6 +2666,7 @@ PANES.ord = function (host) {
     head = callout("info", `Полная детализация «заказ → компонент»: ${num(done.length)}${combos.length > done.length ? " из " + num(combos.length) : ""} площадко-лет (${done.map(e => esc((M.sites[e.s] || e.s) + " · " + e.y)).join(", ")}) — ${num(sum(done, e => e.data.n))} строк компонентов, ${num(ne)} единиц оборудования, ${num(nc)} наименований.` +
       (errs.length ? ` Не удалось загрузить: ${errs.map(e => esc((M.sites[e.s] || e.s) + " · " + e.y)).join(", ")}.` : ""));
   } else if (errs.length) head = callout("bad", `Не удалось загрузить детализацию (${errs.map(e => esc(e.err)).join("; ")}). Показан встроенный срез заказов. При открытии файла с диска браузер блокирует fetch — опубликуйте страницу или запустите локальный сервер.`);
+  if (F.contractors.size && done.length) head += callout("warn", `Фильтр «Подрядчик» здесь не действует: полная детализация «заказ → компонент» не хранит исполнителя работ. Ниже показаны заказы без учёта этого фильтра. Подрядчик учитывается во встроенном срезе (без полной детализации) и в контрагентах УСО.`);
 
   host.innerHTML = head +
     `<div class="quickfind" style="margin-bottom:12px">
@@ -2647,7 +2676,7 @@ PANES.ord = function (host) {
      </div>
      <div class="kpis" id="ordKpi"></div>
      <div class="grid g2">
-       ${card("Заказы", "клик раскрывает компоненты", "tOrd", { tools: dlBtn("tOrd") + ` <button class="minibtn" type="button" data-dl-allmtr title="Выгрузить все ЕКМТР со всеми заказами текущей выборки — не только показанные в таблице 600 строк">Все ЕКМТР (CSV)</button>` })}
+       ${card("Заказы", "клик раскрывает компоненты", "tOrd", { tools: dlBtn("tOrd") + ` <select class="minibtn" id="mtrExportMode" title="Что включать в выгрузку ЕКМТР"><option value="both">план и факт</option><option value="plan">только план</option><option value="fact">только факт</option></select> <button class="minibtn" type="button" data-dl-allmtr title="Выгрузить все ЕКМТР со всеми заказами текущей выборки — не только показанные в таблице 600 строк">Все ЕКМТР (CSV)</button>` })}
        ${card(SEL.order ? "Компоненты заказа " + SEL.order : "Компоненты заказа", SEL.order ? "" : "выберите заказ слева", "tComp", { tools: dlBtn("tComp") })}
      </div>`;
 
@@ -2701,6 +2730,7 @@ PANES.ord = function (host) {
       if (F.fleets.size && r.f && !F.fleets.has(r.f)) continue;
       if (F.works.size && r.w && !F.works.has(r.w)) continue;
       if (keys && !keys.has(eoKey(r.e))) continue;
+      if (F.contractors.size && !F.contractors.has(vendor(r.wc))) continue;
       if (!inMonth(r.m)) continue;
       if (q && !((r.o + " " + (r.e || "") + " " + (r.wc || "")).toLowerCase().includes(q))) continue;
       let x = acc.get(r.o);
@@ -2741,26 +2771,42 @@ PANES.ord = function (host) {
 
   /* Выгрузка «все ЕКМТР с заказами» — плоский список заказ×компонент по
      ВСЕЙ текущей выборке (все фильтры слева + поиск), а не только по
-     600 строкам, показанным в таблице «Заказы» ниже. */
+     600 строкам, показанным в таблице «Заказы» ниже. kind:"plan"/"fact"
+     на колонке — что скрывать, если при выгрузке выбрали только план
+     или только факт; null — колонка остаётся всегда. */
   const csvDate = v => v ? dateRu(v) : "";
+  const MTR_EXPORT_COLS = [
+    { t: "Заказ", kind: null, get: (o, r) => o.o },
+    { t: "Единица оборудования", kind: null, get: (o, r) => o.e || "" },
+    { t: "Способ", kind: null, get: (o, r) => o.u || "" },
+    { t: "Вид работы", kind: null, get: (o, r) => o.w || "" },
+    { t: "Подрядчик", kind: null, get: (o, r) => o.wc || "" },
+    { t: "Базис начало", kind: null, get: (o, r) => csvDate(o.bs) },
+    { t: "Базис конец", kind: null, get: (o, r) => csvDate(o.be) },
+    { t: "Компонент / ЕКМТР", kind: null, get: (o, r) => r.c },
+    { t: "№ ЕКМТР", kind: null, get: (o, r) => r.ek || "" },
+    { t: "Каталожный №", kind: null, get: (o, r) => oemOf(r.c) || "" },
+    { t: "Изготовитель", kind: null, get: (o, r) => r.mf || "" },
+    { t: "Тип позиции", kind: null, get: (o, r) => r.it || "" },
+    { t: "Срочность", kind: null, get: (o, r) => r.ur ? "Срочная" : "" },
+    { t: "Дата потребности", kind: null, get: (o, r) => csvDate(r.nd) },
+    { t: "Дата утв. потребности", kind: null, get: (o, r) => csvDate(r.ad) },
+    { t: "Кол. план", kind: "plan", get: (o, r) => r.qp == null ? "" : r.qp },
+    { t: "Кол. факт", kind: "fact", get: (o, r) => r.qf == null ? "" : r.qf },
+    { t: "План МТР ₽", kind: "plan", get: (o, r) => r.p == null ? "" : r.p },
+    { t: "Факт МТР ₽", kind: "fact", get: (o, r) => r.a == null ? "" : r.a },
+    { t: "План УСО ₽", kind: "plan", get: (o, r) => r.up || 0 },
+    { t: "Факт УСО ₽", kind: "fact", get: (o, r) => r.uf || 0 }
+  ];
   const mtrExportRows = [];
   orders.forEach(o => {
-    (o.rows || []).forEach(r => {
-      mtrExportRows.push([
-        o.o, o.e || "", o.u || "", o.w || "", csvDate(o.bs), csvDate(o.be),
-        r.c, r.ek || "", oemOf(r.c) || "", r.mf || "", r.it || "", r.ur ? "Срочная" : "",
-        csvDate(r.nd), csvDate(r.ad),
-        r.qp == null ? "" : r.qp, r.qf == null ? "" : r.qf,
-        r.p == null ? "" : r.p, r.a == null ? "" : r.a, (r.up || 0) + (r.uf || 0)
-      ]);
-    });
+    (o.rows || []).forEach(r => { mtrExportRows.push(MTR_EXPORT_COLS.map(c => c.get(o, r))); });
   });
   ORD_MTR_EXPORT = {
-    header: ["Заказ", "Единица оборудования", "Способ", "Вид работы", "Базис начало", "Базис конец",
-      "Компонент / ЕКМТР", "№ ЕКМТР", "Каталожный №", "Изготовитель", "Тип позиции", "Срочность",
-      "Дата потребности", "Дата утв. потребности", "Кол. план", "Кол. факт", "План ₽", "Факт ₽", "УСО ₽"],
+    header: MTR_EXPORT_COLS.map(c => c.t),
+    kind: MTR_EXPORT_COLS.map(c => c.kind),
     rows: mtrExportRows,
-    note: `${num(orders.length)} заказов · ${num(mtrExportRows.length)} строк ЕКМТР · ${source === "detail" ? "полная детализация" : "встроенный срез — позиции на уровне единицы оборудования, номер заказа не привязан"}`
+    note: `${num(orders.length)} заказов · ${num(mtrExportRows.length)} строк ЕКМТР · ${source === "detail" ? "полная детализация (подрядчик здесь не хранится)" : "встроенный срез — позиции на уровне единицы оборудования, номер заказа не привязан"}`
   };
 
   const cur = orders.find(o => o.o === SEL.order);
@@ -3342,6 +3388,7 @@ function saveState() {
     sessionStorage.setItem(STATE_KEY, JSON.stringify({
       sites: [...F.sites], years: [...F.years], methods: [...F.methods], fleets: [...F.fleets],
       works: [...F.works], kcls: [...F.kcls], makers: [...F.makers], models: [...F.models], garages: [...F.garages],
+      contractors: [...F.contractors],
       mFrom: F.mFrom, mTo: F.mTo, opt: { ...OPT }, tab: TAB
     }));
   } catch (e) { /* приватный режим/квота — не критично */ }
@@ -3356,7 +3403,7 @@ function loadState() {
     fill(F.years, s.years, new Set(M.years));
     fill(F.methods, s.methods, new Set(M.methods));
     fill(F.fleets, s.fleets); fill(F.works, s.works); fill(F.kcls, s.kcls);
-    fill(F.makers, s.makers); fill(F.models, s.models); fill(F.garages, s.garages);
+    fill(F.makers, s.makers); fill(F.models, s.models); fill(F.garages, s.garages); fill(F.contractors, s.contractors);
     F.mFrom = s.mFrom || ""; F.mTo = s.mTo || "";
     if (s.opt) Object.assign(OPT, s.opt);
     if (s.tab && PANES[s.tab] && !location.hash) TAB = s.tab;
@@ -3404,7 +3451,7 @@ function wire() {
     const h = e.target.closest(".fhead");
     if (h) { h.parentElement.classList.toggle("open"); return; }
     if (e.target.closest("#btnReset")) {
-      [F.sites, F.years, F.methods, F.fleets, F.works, F.kcls, F.makers, F.models, F.garages].forEach(s => s.clear());
+      [F.sites, F.years, F.methods, F.fleets, F.works, F.kcls, F.makers, F.models, F.garages, F.contractors].forEach(s => s.clear());
       F.mFrom = ""; F.mTo = ""; SEL.eo = null; SEL.order = null; QORD = ""; QMTR = ""; QCAT = "";
       Object.keys(FQ).forEach(k => FQ[k] = "");
       const a = document.getElementById("mFrom"), b = document.getElementById("mTo");
@@ -3432,14 +3479,23 @@ function wire() {
       const cardEl = d.closest(".card"), h3 = cardEl && cardEl.querySelector("h3");
       const title = h3 ? (h3.childNodes[0] ? h3.childNodes[0].textContent : h3.textContent).trim() : id;
       const stamp = new Date().toISOString().slice(0, 10);
-      exportTable(h, "TOiR " + title + " " + stamp);
+      const modeEl = cardEl && cardEl.querySelector(`[data-dl-mode="${id}"]`);
+      const mode = modeEl ? modeEl.value : "both";
+      const suffix = mode === "plan" ? " план" : mode === "fact" ? " факт" : "";
+      exportTable(h, "TOiR " + title + suffix + " " + stamp, mode);
       return;
     }
     if (e.target.closest("[data-dl-allmtr]")) {
       const stamp = new Date().toISOString().slice(0, 10);
       const ex = ORD_MTR_EXPORT;
       if (!ex || !ex.rows.length) { showHits("Нечего выгружать — в срезе нет строк ЕКМТР", []); return; }
-      downloadCSV("TOiR все ЕКМТР с заказами " + stamp, ex.header, ex.rows, csvContext() + " · " + ex.note);
+      const modeEl = document.getElementById("mtrExportMode");
+      const mode = modeEl ? modeEl.value : "both";
+      const idx = ex.header.map((h, i) => i).filter(i => !ex.kind[i] || mode === "both" || ex.kind[i] === mode);
+      const header = idx.map(i => ex.header[i]);
+      const rows = ex.rows.map(row => idx.map(i => row[i]));
+      const suffix = mode === "plan" ? " (план)" : mode === "fact" ? " (факт)" : "";
+      downloadCSV("TOiR все ЕКМТР с заказами" + suffix + " " + stamp, header, rows, csvContext() + " · " + ex.note);
       return;
     }
     const mf = e.target.closest("#mfilters");

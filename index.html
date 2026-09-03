@@ -499,6 +499,7 @@ const pp = v => v == null || !isFinite(v) ? "—" : (v > 0 ? "+" : "") + NF1.for
 const MON = ["янв", "фев", "мар", "апр", "май", "июн", "июл", "авг", "сен", "окт", "ноя", "дек"];
 const mLabel = m => { const p = String(m).split("-"); return p.length === 2 ? MON[+p[1] - 1] + " " + p[0].slice(2) : String(m); };
 function trunc(s, n) { s = String(s == null ? "" : s); return s.length > n ? s.slice(0, n - 1) + "…" : s; }
+const dateRu = v => { if (!v) return "—"; const p = String(v).split("-"); return p.length === 3 ? `${p[2]}.${p[1]}.${p[0]}` : String(v); };
 function deltaTag(v, unit, invert) {
   if (v == null || !isFinite(v)) return "";
   const good = invert ? v < 0 : v > 0;
@@ -1326,6 +1327,9 @@ function passEo(r, keys) {
   if (keys && !keys.has(eoKey(r.e))) return false;
   return true;
 }
+/* Сервисный уровень КТГ по контракту с подрядчиком — не выводится из
+   выгрузки SAP, задаётся вручную по модели техники. */
+const SERVICE_KTG_TARGETS = { "БЕЛАЗ-7513Т": 93 };
 function passKtgRow(r) {
   if (F.sites.size && !F.sites.has(r.s)) return false;
   if (F.kcls.size && !F.kcls.has(r.f)) return false;
@@ -1650,6 +1654,7 @@ function unassignedStat() {
   return { sum, tot, n, share: tot ? 100 * sum / tot : 0 };
 }
 function renderKpis() {
+  if (TAB === "ktg") { document.getElementById("kpis").innerHTML = ""; return; }
   const rows = BASE.rows, t = roll(rows);
   const mat = splitByMaturity(rows);
   const closed = roll(mat.closed);
@@ -2086,6 +2091,7 @@ PANES.ktg = function (host) {
   const ms = D.ktgMonths;
   const noKtgYears = [...YS].filter(y => !(M.ktgYears || []).includes(y)).sort();
   const s = ktgSummary(rows, idx);
+  const svcTarget = F.models.size === 1 ? SERVICE_KTG_TARGETS[[...F.models][0]] : null;
   host.innerHTML =
     (noKtgYears.length ? callout("warn", `Данные КТГ есть только за ${esc((M.ktgYears || []).join(", "))}; годы <b>${esc(noKtgYears.join(", "))}</b> в выгрузку готовности не входят.`) : "") +
     (F.fleets.size ? callout("info", `Фильтр «группа МВЗ» применён к КТГ через совпадение единиц оборудования: справочник классов техники и справочник групп МВЗ в исходных данных не пересекаются ни одним значением, прямое сопоставление названий дало бы пустой результат. Сопоставлено ${num(M.ktgMatched)} из ${num((M.ktg || []).length)} единиц.`) : "") +
@@ -2099,13 +2105,21 @@ PANES.ktg = function (host) {
      </div>
      <div class="grid">${card("Единицы оборудования", "отсортированы по возрастанию фактического КТГ", "tKeo", { tools: dlBtn("tKeo") })}</div>`;
 
-  document.getElementById("ktgKpi").innerHTML = kpi([
+  const ktgTiles = [
     { l: "Единиц в срезе", v: num(rows.length), s: `${num(idx.length)} месяцев периода`, tone: "accent" },
     { l: "КТГ план", v: s.p == null ? "—" : pct(100 * s.p), s: "среднее по месяцам с данными" },
     { l: "КТГ факт", v: s.a == null ? "—" : pct(100 * s.a), s: "среднее по месяцам с данными", tone: s.a == null ? "" : s.a >= .9 ? "good" : s.a >= .8 ? "warn" : "bad" },
     { l: "Отклонение", v: s.a == null || s.p == null ? "—" : pp(100 * (s.a - s.p)), s: "факт − план", tone: s.a != null && s.p != null && s.a >= s.p ? "good" : "bad" },
     { l: "Покрытие данными", v: s.cells ? pct(100 * s.filled / s.cells) : "—", s: `${num(s.filled)} из ${num(s.cells)} ячеек «единица × месяц»`, tone: "info" }
-  ]);
+  ];
+  if (svcTarget != null) {
+    ktgTiles.push({
+      l: "Сервисный КТГ (контракт)", v: pct(svcTarget),
+      s: s.a != null ? deltaTag(100 * s.a - svcTarget, " п.п.") + " к факту" : "уровень по контракту с подрядчиком",
+      tone: s.a == null ? "info" : (100 * s.a >= svcTarget ? "good" : "bad")
+    });
+  }
+  document.getElementById("ktgKpi").innerHTML = kpi(ktgTiles);
 
   if (!idx.length || !rows.length) {
     host.querySelector("#cKm").innerHTML = `<div class="empty">Нет данных КТГ в выбранном периоде</div>`;
@@ -2120,12 +2134,14 @@ PANES.ktg = function (host) {
       sp.push(np ? +(100 * p / np).toFixed(2) : null);
       cov.push(na);
     });
+    const kmSeries = [
+      { name: "КТГ план", color: "var(--c6)", data: sp, dash: true },
+      { name: "КТГ факт", color: "var(--c1)", data: sa, width: 2.4 }
+    ];
+    if (svcTarget != null) kmSeries.push({ name: "Сервисный КТГ (контракт)", color: "var(--c4)", data: labels.map(() => svcTarget), dash: true });
     CHART.line(host.querySelector("#cKm"), {
       height: 260, labels, rotate: labels.length > 18, valueFmt: v => NF0.format(v) + "%", min: 50, max: 100,
-      series: [
-        { name: "КТГ план", color: "var(--c6)", data: sp, dash: true },
-        { name: "КТГ факт", color: "var(--c1)", data: sa, width: 2.4 }
-      ]
+      series: kmSeries
     });
     const covHost = el("div", "", "");
     CHART.bars(covHost, { height: 74, labels, hideX: true, valueFmt: num, series: [{ name: "Единиц с данными КТГ в месяце", color: "var(--c2)", data: cov }] });
@@ -2578,9 +2594,21 @@ PANES.ord = function (host) {
         if (F.works.size && !F.works.has(w2)) continue;
         if (q && !((o + " " + e + " " + c).toLowerCase().includes(q))) continue;
         let x = lines.get(o);
-        if (!x) lines.set(o, x = { o, e, w: w2, u, p: 0, a: 0, up: 0, uf: 0, n: 0, rows: [] });
+        if (!x) {
+          const od = d.od && d.od[o];
+          lines.set(o, x = { o, e, w: w2, u, p: 0, a: 0, up: 0, uf: 0, n: 0, rows: [], bs: od ? od[0] : null, be: od ? od[1] : null });
+        }
         x.p += d.p[i] || 0; x.a += d.a[i] || 0; x.up += d.up[i] || 0; x.uf += d.uf[i] || 0; x.n++;
-        x.rows.push({ c, qp: d.qp[i], qf: d.qf[i], p: d.p[i], a: d.a[i], up: d.up[i], uf: d.uf[i], matched: (QMTR || QCAT) ? lineMatchesMtr(c) : false });
+        const ci = d.ci[i];
+        x.rows.push({
+          c, qp: d.qp[i], qf: d.qf[i], p: d.p[i], a: d.a[i], up: d.up[i], uf: d.uf[i], matched: (QMTR || QCAT) ? lineMatchesMtr(c) : false,
+          ek: (d.cek && d.cek[ci]) || "",
+          nd: (d.nd && d.ndi) ? (d.nd[d.ndi[i]] || "") : "",
+          ad: (d.ad && d.adi) ? (d.ad[d.adi[i]] || "") : "",
+          mf: (d.mf && d.mfi) ? (d.mf[d.mfi[i]] || "") : "",
+          it: (d.it && d.iti) ? (d.it[d.iti[i]] || "") : "",
+          ur: (d.ur && d.ur[i]) || 0
+        });
         if (e) x.e = e;
       }
     });
@@ -2643,7 +2671,7 @@ PANES.ord = function (host) {
        программе в срезе (как раньше), иначе цифры вводят в заблуждение. */
     const rowsAll = cur.rows || [];
     const rowsMatched = rowsAll.filter(r => r.matched);
-    document.getElementById("ordKpi").innerHTML = kpi([
+    const curKpis = [
       { l: "Открытый заказ", v: esc(cur.o), s: cur.e ? esc(trunc(cur.e, 34)) : "единица не определена", tone: "accent" },
       {
         l: "Компонентов в заказе", v: num(rowsAll.length),
@@ -2652,7 +2680,9 @@ PANES.ord = function (host) {
       },
       { l: "План ТОиР заказа", v: shortR(cur.tp), s: `МТР ${short(cur.p)} · УСО ${short(cur.up)}` },
       { l: "Факт ТОиР заказа", v: shortR(cur.ta), s: "исполнение " + pct(cur.ex) }
-    ]);
+    ];
+    if (cur.bs || cur.be) curKpis.push({ l: "Базисный срок", v: dateRu(cur.bs) + " – " + dateRu(cur.be), s: "план начала / окончания заказа", tone: "info" });
+    document.getElementById("ordKpi").innerHTML = kpi(curKpis);
   } else {
     document.getElementById("ordKpi").innerHTML = kpi([
       { l: "Заказов", v: num(orders.length), s: mtrNote, tone: "accent" },
@@ -2667,6 +2697,8 @@ PANES.ord = function (host) {
     { k: "o", t: "Заказ", fmt: (v, r) => (r.u === "Не присвоено" && r.w === "Не присвоено" && r.e === "Не присвоено" && r.wc === "Не присвоено") ? `<span class="tag b" title="Способ, работа, единица и исполнитель не назначены">пусто</span> ${esc(v)}` : esc(v) },
     { k: "e", t: "Единица", cls: "name dim" },
     { k: "u", t: "Способ", cls: "dim" }, { k: "w", t: "Вид работы", cls: "dim name" },
+    { k: "bs", t: "Начало", cls: "dim", fmt: v => dateRu(v), hint: "Заказ. Базисный срок начала" },
+    { k: "be", t: "Окончание", cls: "dim", fmt: v => dateRu(v), hint: "Заказ. Базисный срок конца" },
     { k: "n", t: source === "detail" ? "Комп." : "Строк", n: true, fmt: num, hint: source === "detail" ? "Позиций компонентов в заказе" : "Строк заказа во встроенном срезе" },
     { k: "tp", t: "План", n: true, fmt: shortR }, { k: "ta", t: "Факт", n: true, fmt: shortR },
     { k: "ex", t: "Исп.", n: true, fmt: v => v == null ? "—" : pct(v) }
@@ -2679,11 +2711,21 @@ PANES.ord = function (host) {
   });
   tableView(host.querySelector("#tComp"), {
     id: "tComp", sort: "p", maxH: 480,
-    rows: cur ? cur.rows.map(r => ({ c: r.c, matched: !!r.matched, oem: oemOf(r.c), qp: r.qp, qf: r.qf, up: r.qp ? r.p / r.qp : null, ua: r.qf ? r.a / r.qf : null, p: r.p, a: r.a, uso: (r.up || 0) + (r.uf || 0) })) : [],
+    rows: cur ? cur.rows.map(r => ({
+      c: r.c, matched: !!r.matched, oem: oemOf(r.c), qp: r.qp, qf: r.qf,
+      up: r.qp ? r.p / r.qp : null, ua: r.qf ? r.a / r.qf : null, p: r.p, a: r.a, uso: (r.up || 0) + (r.uf || 0),
+      ek: r.ek || "", mf: r.mf || "", it: r.it || "", ur: r.ur || 0, nd: r.nd || "", ad: r.ad || ""
+    })) : [],
     isSel: r => r.matched,
     cols: [
       { k: "c", t: "Компонент / ЕКМТР", cls: "name", fmt: (v, r) => r.matched ? `<mark class="hit">${esc(v)}</mark>` : esc(v) },
+      { k: "ek", t: "№ ЕКМТР", cls: "dim", fmt: v => v ? `<code style="font-size:11px">${esc(v)}</code>` : "—", hint: "Код компонента заказа/заявки в справочнике ЕКМТР" },
+      { k: "mf", t: "Изготовитель", cls: "dim name", fmt: v => v || "—", hint: "Компонент заказа изготовитель" },
       { k: "oem", t: "Каталожный №", cls: "dim", fmt: (v, r) => (v && r.matched && QCAT) ? `<mark class="hit"><code style="font-size:11px">${esc(v)}</code></mark>` : v ? `<code style="font-size:11px">${esc(v)}</code>` : "—", hint: "Номер детали производителя из справочника oem_idx" },
+      { k: "it", t: "Тип позиции", cls: "dim", fmt: v => v || "—", hint: "Компонент заказа Тип позиции" },
+      { k: "ur", t: "Срочность", fmt: v => v ? `<span class="tag b">Срочно</span>` : "", hint: "Компонент Заказа Срочная потребность" },
+      { k: "nd", t: "Дата потребности", cls: "dim", fmt: v => dateRu(v) },
+      { k: "ad", t: "Дата утв. потребности", cls: "dim", fmt: v => dateRu(v) },
       { k: "qp", t: "Кол. план", n: true, fmt: v => v == null || v === "" ? "—" : num(v) },
       { k: "qf", t: "Кол. факт", n: true, fmt: v => v == null || v === "" ? "—" : num(v) },
       { k: "up", t: "Цена план", n: true, fmt: v => v == null ? "—" : short(v) },
@@ -2972,6 +3014,7 @@ function setTab(t) {
   TAB = t;
   document.querySelectorAll("#tabs button").forEach(b => b.classList.toggle("on", b.dataset.t === t));
   try { location.hash = t; } catch (e) { }
+  renderKpis();
   renderTab();
   window.scrollTo({ top: 0, behavior: "instant" in document.documentElement.style ? "instant" : "auto" });
 }

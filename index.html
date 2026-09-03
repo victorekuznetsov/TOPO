@@ -2273,11 +2273,13 @@ PANES.uso = function (host) {
   for (const r of rows) { acc += r.uf; n80++; if (acc >= .8 * totF) break; }
   const top1 = rows[0];
   const merged = rows.filter(r => r.forms > 1).length;
+  const eoFilteredUso = F.kcls.size || F.makers.size || F.models.size || F.garages.size || F.fleets.size;
   host.innerHTML =
     `<div class="kpis" id="usoKpi"></div>` +
     (OPT.merge
       ? callout("info", `Написания контрагентов склеены: в срезе <b>${num(merged)}</b> контрагентов собраны из нескольких вариантов написания. Причина — усечение наименования до ${num(M.vendorCap)} символов в выгрузке PM-M06 (${num(M.vendorCut)} из ${num(M.vendorRaw)} имён упираются в этот предел), разный регистр, кавычки и правовая форма. По всему контуру склейка сводит ${num(M.vendorRaw)} написаний к ${num(M.vendorMerged)} контрагентам. Переключатель — в блоке «Методика» слева.`)
       : callout("warn", "Склейка написаний выключена: один и тот же контрагент считается несколько раз (например «Сумитек Интернейшнл», «СУМИТЕК ИНТЕРНЕЙШНЛ», «ООО «Сумитек Интерне»). Показатели концентрации занижены.")) +
+    (eoFilteredUso ? callout("warn", `Витрина контрагентов УСО сохранена в кубе по контрагенту, площадке и году — <b>без разреза по парку и единице оборудования</b>, поэтому фильтры парка, класса техники, производителя, модели и гаражного номера на неё не действуют (площадка и год — действуют).`) : "") +
     `<div class="grid">${card("Парето по факту УСО", "20 крупнейших контрагентов и накопленная доля", "cPar", { foot: "Столбцы до линии 80% окрашены брендовым цветом — это контрагенты, формирующие основную часть затрат на подряд." })}</div>
      <div class="grid">${card("Контрагенты", "план, факт и исполнение договоров", "tUso", { tools: dlBtn("tUso") })}</div>`;
   document.getElementById("usoKpi").innerHTML = kpi([
@@ -2487,15 +2489,23 @@ PANES.vmz = function (host) {
     ex: x.p ? 100 * x.a / x.p : null
   })).sort((a, b) => b.p - a.p);
   const totP = sum(rows, r => r.p), totA = sum(rows, r => r.a);
-  const comboP = sum(BASE.rows, r => r.p);
+  /* vmzSlices (как и matSlices у МТР) не хранит разрез по единице
+     оборудования — только площадка, год и парк. Доля от полностью
+     отфильтрованной базы (с учётом модели/производителя) была бы
+     нечестной: числитель её не учитывает, а знаменатель схлопывается —
+     см. тот же фикс на вкладке «МТР / ЕКМТР». Используем тот же охват,
+     что умеет сама витрина — площадка, год, парк. */
+  const slicesP = sum(M.combo.filter(r => passSlice(r) && (!F.fleets.size || F.fleets.has(r.f))), r => r.p);
+  const eoFiltered = F.kcls.size || F.makers.size || F.models.size || F.garages.size;
   host.innerHTML =
     `<div class="kpis" id="vmzKpi"></div>` +
     callout("info", `ВМЗ — внутренние места возникновения затрат (хозспособ и комбинированный ремонт). Витрина покрывает ${shortR(M.cov.vmz.p)} плана МТР против ${shortR(M.cov.totals.p)} всего плана (${pct(100 * M.cov.vmz.share)}); остаток относится к заказам без назначенного внутреннего рабочего места.`) +
+    (eoFiltered ? callout("warn", `Таблица ниже сохранена в кубе по подразделению, площадке, году и парку — <b>без разреза по единице оборудования</b>, поэтому фильтры класса техники, производителя, модели и гаражного номера на неё не действуют (площадка, год и парк — действуют).`) : "") +
     `<div class="grid">${card("Крупнейшие внутренние подразделения", "план и факт МТР", "cVmz")}</div>
-     <div class="grid">${card("Внутренние места возникновения затрат", "", "tVmz", { tools: dlBtn("tVmz") })}</div>`;
+     <div class="grid">${card("Внутренние места возникновения затрат", "по площадке, году и парку среза — без разреза по единице оборудования", "tVmz", { tools: dlBtn("tVmz") })}</div>`;
   document.getElementById("vmzKpi").innerHTML = kpi([
     { l: "Подразделений", v: num(rows.length), s: "в текущем срезе", tone: "accent" },
-    { l: "План МТР", v: shortR(totP), s: pct(comboP ? 100 * totP / comboP : 0) + " плана МТР среза" },
+    { l: "План МТР", v: shortR(totP), s: pct(slicesP ? 100 * totP / slicesP : 0) + " плана МТР площадок/годов/парков среза" },
     { l: "Факт МТР", v: shortR(totA), s: "исполнение " + pct(totP ? 100 * totA / totP : null) },
     { l: "Заказо-строк", v: num(sum(rows, r => r.o)), s: "с двойным счётом при пересечении срезов", tone: "info" }
   ]);
@@ -2637,7 +2647,7 @@ PANES.ord = function (host) {
      </div>
      <div class="kpis" id="ordKpi"></div>
      <div class="grid g2">
-       ${card("Заказы", "клик раскрывает компоненты", "tOrd", { tools: dlBtn("tOrd") })}
+       ${card("Заказы", "клик раскрывает компоненты", "tOrd", { tools: dlBtn("tOrd") + ` <button class="minibtn" type="button" data-dl-allmtr title="Выгрузить все ЕКМТР со всеми заказами текущей выборки — не только показанные в таблице 600 строк">Все ЕКМТР (CSV)</button>` })}
        ${card(SEL.order ? "Компоненты заказа " + SEL.order : "Компоненты заказа", SEL.order ? "" : "выберите заказ слева", "tComp", { tools: dlBtn("tComp") })}
      </div>`;
 
@@ -2645,12 +2655,20 @@ PANES.ord = function (host) {
   let orders = [], lines = new Map(), source = "";
   if (done.length) {
     source = "detail";
+    /* Полная детализация хранит только заказ/единицу/компонент — без
+       модели, производителя, класса техники, гаражного номера и парка.
+       Без этого моста фильтры слева по этим атрибутам молча ничего не
+       делали на этой вкладке (заказов оставалось столько же, сколько
+       без фильтра) — та же болезнь, что была на вкладке «МТР / ЕКМТР». */
+    const keys = allowedEoKeys();
     done.forEach(entry => {
       const d = entry.data;
       for (let i = 0; i < d.n; i++) {
         const u = d.u[i], w2 = d.w[d.wi[i]], e = d.e[d.ei[i]], c = d.c[d.ci[i]], o = d.o[i];
         if (F.methods.size && !F.methods.has(u) && !(F.methods.has("Хозспособ") && u === "ХС") && !(F.methods.has("Комбинированный") && u === "Комб")) continue;
         if (F.works.size && !F.works.has(w2)) continue;
+        if (keys && !keys.has(eoKey(e))) continue;
+        if (F.fleets.size) { const fl = M.eoFleet.get(eoKey(e)); if (fl && !F.fleets.has(fl)) continue; }
         if (q && !((o + " " + e + " " + c).toLowerCase().includes(q))) continue;
         let x = lines.get(o);
         if (!x) {
@@ -2720,6 +2738,31 @@ PANES.ord = function (host) {
   if (QMTR || QCAT) orders = orders.filter(o => (o.rows || []).some(r => r.matched));
   orders.forEach(o => { o.tp = o.p + o.up; o.ta = o.a + o.uf; o.ex = o.tp ? 100 * o.ta / o.tp : null; });
   orders.sort((a, b) => (b.tp + b.ta) - (a.tp + a.ta));
+
+  /* Выгрузка «все ЕКМТР с заказами» — плоский список заказ×компонент по
+     ВСЕЙ текущей выборке (все фильтры слева + поиск), а не только по
+     600 строкам, показанным в таблице «Заказы» ниже. */
+  const csvDate = v => v ? dateRu(v) : "";
+  const mtrExportRows = [];
+  orders.forEach(o => {
+    (o.rows || []).forEach(r => {
+      mtrExportRows.push([
+        o.o, o.e || "", o.u || "", o.w || "", csvDate(o.bs), csvDate(o.be),
+        r.c, r.ek || "", oemOf(r.c) || "", r.mf || "", r.it || "", r.ur ? "Срочная" : "",
+        csvDate(r.nd), csvDate(r.ad),
+        r.qp == null ? "" : r.qp, r.qf == null ? "" : r.qf,
+        r.p == null ? "" : r.p, r.a == null ? "" : r.a, (r.up || 0) + (r.uf || 0)
+      ]);
+    });
+  });
+  ORD_MTR_EXPORT = {
+    header: ["Заказ", "Единица оборудования", "Способ", "Вид работы", "Базис начало", "Базис конец",
+      "Компонент / ЕКМТР", "№ ЕКМТР", "Каталожный №", "Изготовитель", "Тип позиции", "Срочность",
+      "Дата потребности", "Дата утв. потребности", "Кол. план", "Кол. факт", "План ₽", "Факт ₽", "УСО ₽"],
+    rows: mtrExportRows,
+    note: `${num(orders.length)} заказов · ${num(mtrExportRows.length)} строк ЕКМТР · ${source === "detail" ? "полная детализация" : "встроенный срез — позиции на уровне единицы оборудования, номер заказа не привязан"}`
+  };
+
   const cur = orders.find(o => o.o === SEL.order);
   const t = { p: sum(orders, o => o.p), a: sum(orders, o => o.a), up: sum(orders, o => o.up), uf: sum(orders, o => o.uf), n: sum(orders, o => o.n) };
   const mtrNote = (QMTR || QCAT)
@@ -2942,6 +2985,7 @@ PANES.cmp = function (host) {
   });
 };
 
+let ORD_MTR_EXPORT = null;
 let QORD = "";
 let QMTR = "";
 let QCAT = "";
@@ -3389,6 +3433,13 @@ function wire() {
       const title = h3 ? (h3.childNodes[0] ? h3.childNodes[0].textContent : h3.textContent).trim() : id;
       const stamp = new Date().toISOString().slice(0, 10);
       exportTable(h, "TOiR " + title + " " + stamp);
+      return;
+    }
+    if (e.target.closest("[data-dl-allmtr]")) {
+      const stamp = new Date().toISOString().slice(0, 10);
+      const ex = ORD_MTR_EXPORT;
+      if (!ex || !ex.rows.length) { showHits("Нечего выгружать — в срезе нет строк ЕКМТР", []); return; }
+      downloadCSV("TOiR все ЕКМТР с заказами " + stamp, ex.header, ex.rows, csvContext() + " · " + ex.note);
       return;
     }
     const mf = e.target.closest("#mfilters");

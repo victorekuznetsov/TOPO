@@ -2332,27 +2332,43 @@ PANES.uso = function (host) {
 
 /* ---------- МТР / ЕКМТР ---------- */
 PANES.mtr = function (host) {
-  const mat = M.mat.filter(passSlice);
-  const m = new Map();
-  mat.forEach(r => { let x = m.get(r.name); if (!x) m.set(r.name, x = { name: r.name, p: 0, a: 0, n: 0, sites: new Set(), years: new Set() }); x.p += r.p || 0; x.a += r.a || 0; x.n += r.n || 0; x.sites.add(r.s); x.years.add(String(r.y)); });
-  let rows = [...m.values()]
-    .filter(x => lineMatchesMtr(x.name))
-    .map(x => ({ name: x.name, p: x.p, a: x.a, n: x.n, ex: x.p ? 100 * x.a / x.p : null, sites: [...x.sites].map(s => M.sites[s] || s).join(", "), years: [...x.years].sort().join(", ") })).sort((a, b) => b.p - a.p);
+  const keys = allowedEoKeys();
+  const eoFiltered = !!keys;
+  /* «Позиции МТР» (tMat/ABC) по умолчанию собраны в кубе по (наименование ×
+     площадка × год) — без разреза по единице оборудования: этого измерения
+     в сохранённых 6 000 срезах нет. Но когда активен фильтр класса/
+     производителя/модели/гаража, эти 6 000 срезов бесполезны — вместо них
+     таблицу и ABC ниже строим из «Компонентов ЕКМТР по единицам
+     оборудования» (mtrList), где разрез по технике есть, агрегируя строки
+     по наименованию компонента — так фильтр реально сужает список, а не
+     просто перестаёт отображаться как нерелевантный. */
+  let rows;
+  if (eoFiltered) {
+    const ml = M.mtrList.filter(r => (!F.sites.size || F.sites.has(r.s)) && YS.has(String(r.y)) && keys.has(eoKey(r.e)));
+    const m = new Map();
+    ml.forEach(r => { let x = m.get(r.c); if (!x) m.set(r.c, x = { name: r.c, p: 0, a: 0, n: 0, sites: new Set(), years: new Set() }); x.p += r.p || 0; x.a += r.a || 0; x.n++; x.sites.add(r.s); x.years.add(String(r.y)); });
+    rows = [...m.values()]
+      .filter(x => lineMatchesMtr(x.name))
+      .map(x => ({ name: x.name, p: x.p, a: x.a, n: x.n, ex: x.p ? 100 * x.a / x.p : null, sites: [...x.sites].map(s => M.sites[s] || s).join(", "), years: [...x.years].sort().join(", ") })).sort((a, b) => b.p - a.p);
+  } else {
+    const mat = M.mat.filter(passSlice);
+    const m = new Map();
+    mat.forEach(r => { let x = m.get(r.name); if (!x) m.set(r.name, x = { name: r.name, p: 0, a: 0, n: 0, sites: new Set(), years: new Set() }); x.p += r.p || 0; x.a += r.a || 0; x.n += r.n || 0; x.sites.add(r.s); x.years.add(String(r.y)); });
+    rows = [...m.values()]
+      .filter(x => lineMatchesMtr(x.name))
+      .map(x => ({ name: x.name, p: x.p, a: x.a, n: x.n, ex: x.p ? 100 * x.a / x.p : null, sites: [...x.sites].map(s => M.sites[s] || s).join(", "), years: [...x.years].sort().join(", ") })).sort((a, b) => b.p - a.p);
+  }
   const totP = sum(rows, r => r.p), totA = sum(rows, r => r.a);
   let acc = 0;
   rows.forEach(r => { acc += r.p; r.cum = totP ? 100 * acc / totP : 0; r.abc = r.cum <= 80 ? "A" : r.cum <= 95 ? "B" : "C"; });
   const nA = rows.filter(r => r.abc === "A").length;
-  /* «Позиции МТР» (tMat/ABC) собраны в кубе по (наименование × площадка ×
-     год) — без разреза по единице оборудования, поэтому фильтры модели/
-     производителя/класса/гаража/парка на них физически не могут подействовать:
-     этого измерения в сохранённых 6 000 срезах нет. Сравнивать их план
-     нужно с тем же охватом (площадка+год), а не с полностью отфильтрованной
-     базой — иначе при фильтре по модели знаменатель схлопывается и доля
-     улетает за сотни процентов. */
-  const slicesP = sum(M.combo.filter(passSlice), r => r.p);
-  const eoFiltered = F.kcls.size || F.makers.size || F.models.size || F.garages.size;
+  /* Сравнивать план позиций нужно с тем же охватом, что и сам срез: без
+     фильтра техники — план МТР по площадкам/годам (M.combo); с фильтром
+     техники — план МТР именно по отобранным единицам оборудования
+     (M.eoList), иначе при узкой модели знаменатель не совпадает с
+     числителем и доля улетает за сотни процентов. */
+  const slicesP = eoFiltered ? sum(M.eoList.filter(r => passEo(r, keys)), r => r.p) : sum(M.combo.filter(passSlice), r => r.p);
 
-  const keys = allowedEoKeys();
   const lines = M.mtrList.filter(r => (!F.sites.size || F.sites.has(r.s)) && YS.has(String(r.y)))
     .filter(r => !keys || keys.has(eoKey(r.e)))
     .filter(r => !SEL.eo || (eoKey(r.e) === eoKey(SEL.eo.e) && (!SEL.eo.s || r.s === SEL.eo.s)))
@@ -2362,15 +2378,16 @@ PANES.mtr = function (host) {
 
   host.innerHTML =
     `<div class="kpis" id="mtrKpi"></div>` +
-    callout("info", `Витрина позиций МТР охватывает <b>${shortR(totP)}</b> плана — это ${pct(slicesP ? 100 * totP / slicesP : 0)} плана МТР по площадкам и годам среза. Остальное приходится на позиции вне ${num(M.mat.length)} сохранённых срезов. Суммы ниже — по покрытой части, а не по всему плану.`) +
+    (eoFiltered
+      ? callout("info", `Активен фильтр техники — «Позиции МТР» и ABC ниже пересчитаны из компонентов ЕКМТР по отобранным единицам оборудования (не из срезов по площадке/году): <b>${shortR(totP)}</b> плана, это ${pct(slicesP ? 100 * totP / slicesP : 0)} плана МТР по отобранной технике.`)
+      : callout("info", `Витрина позиций МТР охватывает <b>${shortR(totP)}</b> плана — это ${pct(slicesP ? 100 * totP / slicesP : 0)} плана МТР по площадкам и годам среза. Остальное приходится на позиции вне ${num(M.mat.length)} сохранённых срезов. Суммы ниже — по покрытой части, а не по всему плану.`)) +
     (F.contractors.size ? callout("warn", `Фильтр «Подрядчик» на эту вкладку не действует — ни позиции МТР, ни компоненты ЕКМТР по единицам оборудования не хранят исполнителя. Подрядчик есть в заказах (вкладка «Заказы») и в контрагентах УСО.`) : "") +
-    (eoFiltered ? callout("warn", `Таблица «Позиции МТР» и ABC ниже сохранены в кубе по наименованию, площадке и году — <b>без разреза по единице оборудования</b>, поэтому фильтры класса техники, производителя, модели и гаражного номера на них не действуют (площадка и год — действуют). Доля выше тоже посчитана без этих фильтров, иначе при узком фильтре по модели знаменатель схлопывается и доля улетает за сотни процентов. Таблица «Компоненты ЕКМТР по единицам оборудования» ниже эти фильтры поддерживает.`) : "") +
     `<div class="quickfind" style="margin-bottom:12px">
       <label>ЕКМТР<input type="search" id="qMtr" placeholder="наименование компонента" value="${esc(QMTR)}"></label>
       <label>Каталожный №<input type="search" id="qCat" placeholder="номер детали производителя" value="${esc(QCAT)}"></label>
      </div>
      <div class="grid">${card("ABC-разложение позиций МТР", "20 крупнейших позиций по плану", "cAbc", { foot: "Группа A — позиции, дающие первые 80% плана; B — до 95%; C — длинный хвост. Планирование запаса и переговоры о цене имеют смысл прежде всего в группе A." })}</div>
-     <div class="grid">${card("Позиции МТР", "по площадке и году среза — без разреза по единице оборудования", "tMat", { tools: dlBtn("tMat") })}</div>
+     <div class="grid">${card("Позиции МТР", eoFiltered ? "по отобранной технике — из компонентов ЕКМТР по единицам оборудования" : "по площадке и году среза — без разреза по единице оборудования", "tMat", { tools: dlBtn("tMat") })}</div>
      <div class="grid">${card(SEL.eo ? "Компоненты ЕКМТР: " + SEL.eo.e : "Компоненты ЕКМТР по единицам оборудования", "план и факт количества и расчётной цены — с учётом всех фильтров слева", "tLines", { tools: dlBtn("tLines"), foot: "Расчётная цена = стоимость / количество. Расхождение цены план→факт показывает, где отклонение вызвано ценой, а не объёмом." })}</div>
      <div class="grid">${card("Глобальный каталог ЕКМТР", "1 800 крупнейших компонентов", "tCat", { tools: dlBtn("tCat") })}</div>`;
   document.getElementById("mtrKpi").innerHTML = kpi([

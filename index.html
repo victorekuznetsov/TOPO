@@ -176,7 +176,7 @@ select{cursor:pointer}
 .chip .x:hover{color:var(--bad);background:var(--bad-bg)}
 .chip.ghost{background:none;border-style:dashed;color:var(--ink-4)}
 .quickfind{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px;margin:0 0 12px;align-items:end}
-.quickfind label{display:flex;flex-direction:column;gap:4px;font-size:11px;color:var(--ink-3)}
+.quickfind label{display:flex;flex-direction:column;gap:4px;font-size:11px;color:var(--ink-3);position:relative}
 .quickfind{padding:10px 12px;background:var(--surface);border:var(--hair);border-radius:var(--radius-lg);box-shadow:var(--shadow-sm)}
 .quickfind label{letter-spacing:.04em;text-transform:uppercase;font-weight:600}
 .quickfind input{width:100%;padding:7px 9px;border-radius:var(--radius);border:var(--hair);background:var(--surface-2);color:var(--ink);font-size:13px}
@@ -184,6 +184,11 @@ select{cursor:pointer}
 .quickfind .hits{grid-column:1/-1;display:flex;flex-wrap:wrap;gap:6px}
 .quickfind .hit{cursor:pointer;padding:3px 9px;border-radius:99px;border:var(--hair);background:var(--surface-2);font-size:11.5px;color:var(--ink-2)}
 .quickfind .hit:hover{border-color:var(--accent);color:var(--accent)}
+.qf-drop{position:absolute;top:100%;left:0;right:0;margin-top:4px;background:var(--surface);border:1px solid var(--line-2);border-radius:var(--radius);box-shadow:var(--shadow);max-height:280px;overflow:auto;z-index:70;text-transform:none;letter-spacing:normal;font-weight:400}
+.qf-drop .it{display:flex;justify-content:space-between;gap:10px;padding:7px 10px;cursor:pointer;font-size:12.5px;color:var(--ink-2)}
+.qf-drop .it:hover{background:var(--surface-2);color:var(--ink)}
+.qf-drop .it small{color:var(--ink-4);font-size:11px;flex:0 0 auto}
+.qf-drop .none{padding:8px 10px;font-size:11.5px;color:var(--ink-4)}
 
 /* ---------- KPI ---------- */
 .kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(168px,1fr));gap:10px;margin-bottom:14px}
@@ -441,16 +446,17 @@ body.ready #boot{display:none}
   <div class="chips" id="chips"></div>
   <div class="quickfind" id="quickFind">
     <label>Модель
-      <input type="search" id="qModel" list="dlModels" placeholder="поиск и выбор модели">
+      <input type="search" id="qModel" placeholder="поиск и выбор модели" autocomplete="off">
+      <div class="qf-drop" id="qModelHits" hidden></div>
     </label>
     <label>Гаражный номер
-      <input type="search" id="qGarage" list="dlGarages" placeholder="поиск и выбор гаража">
+      <input type="search" id="qGarage" placeholder="поиск и выбор гаража" autocomplete="off">
+      <div class="qf-drop" id="qGarageHits" hidden></div>
     </label>
     <label>Заказ
-      <input type="search" id="qOrderFind" placeholder="номер заказа — Enter выбрать">
+      <input type="search" id="qOrderFind" placeholder="номер заказа — выбор из списка" autocomplete="off">
+      <div class="qf-drop" id="qOrderFindHits" hidden></div>
     </label>
-    <datalist id="dlModels"></datalist>
-    <datalist id="dlGarages"></datalist>
     <div class="hits" id="qHits"></div>
   </div>
   <div id="perimeter"></div>
@@ -522,24 +528,47 @@ function downloadCSV(name, header, rows, ctxLine) {
     if (ic) ic.innerHTML = '<use href="#' + (t === "dark" ? "i-sun" : "i-moon") + '"/>';
   }
   const qf = document.getElementById("quickFind");
+  const QF_FIELDS = { qModel: ["model", "qModelHits"], qGarage: ["garage", "qGarageHits"], qOrderFind: ["order", "qOrderFindHits"] };
   if (qf) {
     qf.addEventListener("keydown", e => {
+      if (e.key === "Escape") { Object.values(QF_FIELDS).forEach(([, id]) => { const b = document.getElementById(id); if (b) b.hidden = true; }); return; }
       if (e.key !== "Enter") return;
-      if (e.target.id === "qModel") applyQuick("model", e.target.value);
-      if (e.target.id === "qGarage") applyQuick("garage", e.target.value);
-      if (e.target.id === "qOrderFind") applyQuick("order", e.target.value);
+      const f = QF_FIELDS[e.target.id]; if (!f) return;
+      applyQuick(f[0], e.target.value);
+      const b = document.getElementById(f[1]); if (b) b.hidden = true;
     });
-    qf.addEventListener("change", e => {
-      if (e.target.id === "qModel") applyQuick("model", e.target.value);
-      if (e.target.id === "qGarage") applyQuick("garage", e.target.value);
+    qf.addEventListener("input", debounce(e => {
+      const f = QF_FIELDS[e.target.id]; if (!f) return;
+      renderQfDrop(f[0], e.target.id, f[1]);
+    }, 150));
+    qf.addEventListener("focusin", e => {
+      const f = QF_FIELDS[e.target.id]; if (!f) return;
+      if (e.target.value.trim()) renderQfDrop(f[0], e.target.id, f[1]);
     });
     qf.addEventListener("click", e => {
       const h = e.target.closest("[data-qkind]");
-      if (!h) return;
-      const k = h.getAttribute("data-qkind"), v = h.getAttribute("data-qval");
-      if (k === "model") pickModel(v);
-      if (k === "garage") pickGarage(v);
-      if (k === "order") pickOrder(v);
+      if (h) {
+        const k = h.getAttribute("data-qkind"), v = h.getAttribute("data-qval");
+        if (k === "model") pickModel(v);
+        if (k === "garage") pickGarage(v);
+        if (k === "order") pickOrder(v);
+        return;
+      }
+      const it = e.target.closest(".qf-drop .it");
+      if (it) {
+        const box = it.closest(".qf-drop");
+        const item = (box.__items || [])[+it.getAttribute("data-qi")];
+        if (item) {
+          if (item.kind === "model") pickModel(item.val);
+          else if (item.kind === "garage") pickGarage(item.val);
+          else if (item.kind === "order") pickOrder(item.val);
+        }
+        box.hidden = true; box.innerHTML = "";
+      }
+    });
+    document.addEventListener("click", e => {
+      if (e.target.closest("#quickFind")) return;
+      Object.values(QF_FIELDS).forEach(([, id]) => { const b = document.getElementById(id); if (b) b.hidden = true; });
     });
   }
   document.addEventListener("click", e => {
@@ -918,7 +947,11 @@ const CHART = (function () {
 /* =====================================================================
    3. Модель данных
    ===================================================================== */
-const D = { cube: null, ktgSrc: [], ktgMonths: [], det: null, detKey: "" };
+const D = { cube: null, ktgSrc: [], ktgMonths: [], dets: new Map() };
+let DET_FORCE = false;
+const DET_AUTO_CAP = 6;
+const DET_AVG_MB = 7;
+const DET_CACHE_CAP = 10;
 const M = {};
 const F = { sites: new Set(), years: new Set(), methods: new Set(), fleets: new Set(), works: new Set(), kcls: new Set(), makers: new Set(), models: new Set(), garages: new Set(), mFrom: "", mTo: "" };
 const OPT = { merge: true, comparable: false, closed: false, excludeUnassigned: false };
@@ -1350,7 +1383,7 @@ function tableView(host, spec) {
   }
   const limit = spec.limit || 400;
   const shown = rows.slice(0, limit);
-  const maxBar = spec.bar ? Math.max(1, ...rows.map(r => Math.abs(r[spec.bar] || 0))) : 0;
+  const maxBar = spec.bar ? rows.reduce((m, r) => Math.max(m, Math.abs(r[spec.bar] || 0)), 1) : 0;
   let html = '<div class="tw"' + (spec.maxH ? ` style="--tmax:${spec.maxH}px"` : "") + '><table><thead><tr>';
   spec.cols.forEach(c => {
     const on = st.k === c.k;
@@ -2317,7 +2350,7 @@ PANES.eo = function (host) {
   host.innerHTML =
     `<div class="kpis" id="eoKpi"></div>
      <div class="grid">${card("Единицы оборудования", `${num(rows.length)} единиц · клик открывает заказы`, "tEo", { tools: dlBtn("tEo") })}</div>
-     <div class="grid">${card(sel ? "Заказы единицы: " + sel.e : "Заказы выбранной единицы", sel ? "" : "выберите строку в таблице выше", "tEoOrd", { tools: dlBtn("tEoOrd"), foot: `Встроенный срез заказов — ${num(M.cov.orders.rows)} строк из ${num(M.cov.orders.src)} в источнике (${pct(100 * M.cov.orders.rows / (M.cov.orders.src || 1))}): сохранены крупнейшие. Полный список за площадку и год — на вкладке «Заказы».` })}</div>`;
+     <div class="grid">${card(sel ? "Заказы единицы: " + sel.e : "Заказы выбранной единицы", sel ? "" : "выберите строку в таблице выше", "tEoOrd", { tools: dlBtn("tEoOrd"), foot: `Встроенный срез заказов — ${num(M.cov.orders.rows)} строк из ${num(M.cov.orders.src)} в источнике (${pct(100 * M.cov.orders.rows / (M.cov.orders.src || 1))}): сохранены крупнейшие. Полная детализация — на вкладке «Заказы», по площадкам и годам из фильтра слева (не только по одной штуке).` })}</div>`;
   document.getElementById("eoKpi").innerHTML = kpi([
     { l: "Единиц в срезе", v: num(rows.length), s: `${num(rows.filter(r => r.ktg != null).length)} с данными КТГ`, tone: "accent" },
     { l: "План ТОиР", v: shortR(t.p + t.up), s: `МТР ${short(t.p)} · УСО ${short(t.up)}` },
@@ -2403,21 +2436,52 @@ PANES.vmz = function (host) {
   });
 };
 
-/* ---------- Заказы и компоненты ---------- */
-function detState() {
-  const s = [...F.sites], y = [...YS];
-  if (s.length === 1 && y.length === 1) return { s: s[0], y: y[0], key: s[0] + "_" + y[0] };
-  return null;
+/* ---------- Заказы и компоненты ----------
+   Полная детализация «заказ → компонент» хранится файлами data/{площадка}_{год}.json
+   (141 МБ на все 21 срез). Раньше подгружался только один файл — ровно при
+   выборе одной площадки и одного года; при любом другом сочетании фильтров
+   отчёт молча падал на встроенный (усечённый) срез. Теперь грузятся ВСЕ
+   файлы, которые попадают под текущий фильтр площадок/годов — параллельно,
+   с кэшем на DET_CACHE_CAP последних срезов. Если под фильтр попадает
+   больше DET_AUTO_CAP файлов (по умолчанию ~40+ МБ), автозагрузка не
+   стартует — пользователь явно подтверждает загрузку кнопкой. */
+function detCombos() {
+  const avail = ORDIDX.combos || [];
+  if (!avail.length) return [];
+  const out = [];
+  avail.forEach(combo => {
+    const sep = combo.indexOf("_");
+    const s = combo.slice(0, sep), y = combo.slice(sep + 1);
+    if (F.sites.size && !F.sites.has(s)) return;
+    if (YS && YS.size && !YS.has(y)) return;
+    out.push({ s, y, key: combo });
+  });
+  return out;
 }
-function loadDetail(st, onDone) {
-  if (!st) return;
-  if (D.detKey === st.key) { onDone && onDone(); return; }
-  const url = "data/" + st.key + ".json";
-  D.detKey = st.key; D.det = null; D.detErr = null; D.detLoading = true;
-  onDone && onDone();
-  fetch(url).then(r => { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
-    .then(d => { D.det = d; D.detLoading = false; if (TAB === "ord") renderTab(); })
-    .catch(e => { D.detErr = String(e && e.message || e); D.detLoading = false; if (TAB === "ord") renderTab(); });
+function pruneDetailCache(wantedKeys) {
+  const wanted = new Set(wantedKeys);
+  const loaded = [...D.dets.values()].filter(e => e.data && !wanted.has(e.key));
+  let over = D.dets.size - DET_CACHE_CAP;
+  for (const e of loaded) { if (over <= 0) break; D.dets.delete(e.key); over--; }
+}
+function ensureDetailLoaded(combos) {
+  combos.forEach(c => {
+    if (D.dets.has(c.key)) return;
+    const entry = { key: c.key, s: c.s, y: c.y, data: null, err: null, loading: true };
+    D.dets.set(c.key, entry);
+    fetch("data/" + c.key + ".json").then(r => { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
+      .then(d => { entry.data = d; entry.loading = false; if (TAB === "ord" || TAB === "eo") renderTab(); })
+      .catch(e => { entry.err = String(e && e.message || e); entry.loading = false; if (TAB === "ord" || TAB === "eo") renderTab(); });
+  });
+}
+function wantedDetail() {
+  const combos = detCombos();
+  if (!combos.length) return { combos, load: false, tooMany: false };
+  const tooMany = combos.length > DET_AUTO_CAP;
+  return { combos, load: !tooMany || DET_FORCE, tooMany };
+}
+function loadedDetails(combos) {
+  return combos.map(c => D.dets.get(c.key)).filter(Boolean);
 }
 
 /* Каталожные номера производителей: индекс из oem_idx.json.
@@ -2462,13 +2526,24 @@ function lineMatchesMtr(c) {
   return true;
 }
 PANES.ord = function (host) {
-  const st = detState();
+  const w = wantedDetail();
+  const combos = w.combos;
+  const dets = loadedDetails(combos);
+  const done = dets.filter(e => e.data);
+  const loading = dets.filter(e => e.loading);
+  const errs = dets.filter(e => e.err);
   const cov = M.cov.orders;
   let head = "";
-  if (!st) head = callout("info", `Полная детализация «заказ → компонент» хранится отдельными файлами по площадке и году. Отметьте <b>ровно одну площадку и один год</b> слева, чтобы подгрузить её. Сейчас показан встроенный срез: ${num(cov.rows)} заказо-строк из ${num(cov.src)} в источнике (${pct(100 * cov.rows / (cov.src || 1))}) — крупнейшие по сумме.`);
-  else if (D.detLoading) head = callout("info", `Загружается детализация <b>${esc(M.sites[st.s] || st.s)} · ${esc(st.y)}</b>…`);
-  else if (D.detErr) head = callout("bad", `Не удалось загрузить <b>data/${esc(st.key)}.json</b> (${esc(D.detErr)}). Показан встроенный срез заказов. При открытии файла с диска браузер блокирует fetch — опубликуйте страницу или запустите локальный сервер.`);
-  else if (D.det) head = callout("info", `Полная детализация <b>${esc(M.sites[D.det.s] || D.det.s)} · ${esc(D.det.y)}</b>: ${num(D.det.n)} строк компонентов, ${num(D.det.e.length)} единиц оборудования, ${num(D.det.c.length)} наименований.`);
+  if (!combos.length) head = callout("info", `Полная детализация «заказ → компонент» хранится файлами по площадке и году. Отметьте хотя бы одну площадку слева (или сузьте годы), чтобы её подгрузить. Сейчас показан встроенный срез: ${num(cov.rows)} заказо-строк из ${num(cov.src)} в источнике (${pct(100 * cov.rows / (cov.src || 1))}) — крупнейшие по сумме.`);
+  else if (w.tooMany && !DET_FORCE) {
+    const mb = Math.round(combos.length * DET_AVG_MB);
+    head = callout("warn", `Текущему фильтру соответствует ${num(combos.length)} файлов полной детализации (~${mb} МБ). Автозагрузка отключена, чтобы не тянуть это незаметно — показан встроенный срез: ${num(cov.rows)} заказо-строк из ${num(cov.src)} в источнике (крупнейшие по сумме). <button type="button" class="minibtn" id="btnLoadDet">Загрузить полную детализацию (~${mb} МБ)</button> — или сузьте площадки/годы слева.`);
+  } else if (loading.length) head = callout("info", `Загружается полная детализация: ${num(done.length)} из ${num(combos.length)} файлов готово…`);
+  else if (done.length) {
+    const ne = uniq(done.flatMap(e => e.data.e)).length, nc = uniq(done.flatMap(e => e.data.c)).length;
+    head = callout("info", `Полная детализация «заказ → компонент»: ${num(done.length)}${combos.length > done.length ? " из " + num(combos.length) : ""} площадко-лет (${done.map(e => esc((M.sites[e.s] || e.s) + " · " + e.y)).join(", ")}) — ${num(sum(done, e => e.data.n))} строк компонентов, ${num(ne)} единиц оборудования, ${num(nc)} наименований.` +
+      (errs.length ? ` Не удалось загрузить: ${errs.map(e => esc((M.sites[e.s] || e.s) + " · " + e.y)).join(", ")}.` : ""));
+  } else if (errs.length) head = callout("bad", `Не удалось загрузить детализацию (${errs.map(e => esc(e.err)).join("; ")}). Показан встроенный срез заказов. При открытии файла с диска браузер блокирует fetch — опубликуйте страницу или запустите локальный сервер.`);
 
   host.innerHTML = head +
     `<div class="quickfind" style="margin-bottom:12px">
@@ -2481,25 +2556,26 @@ PANES.ord = function (host) {
        ${card("Заказы", "клик раскрывает компоненты", "tOrd", { tools: dlBtn("tOrd") })}
        ${card(SEL.order ? "Компоненты заказа " + SEL.order : "Компоненты заказа", SEL.order ? "" : "выберите заказ слева", "tComp", { tools: dlBtn("tComp") })}
      </div>`;
-  if (st && !D.det && !D.detErr) loadDetail(st, null);
 
   const q = QORD.toLowerCase();
   let orders = [], lines = new Map(), source = "";
-  if (D.det && st && D.detKey === st.key) {
+  if (done.length) {
     source = "detail";
-    const d = D.det;
-    for (let i = 0; i < d.n; i++) {
-      const u = d.u[i], w = d.w[d.wi[i]], e = d.e[d.ei[i]], c = d.c[d.ci[i]], o = d.o[i];
-      if (F.methods.size && !F.methods.has(u) && !(F.methods.has("Хозспособ") && u === "ХС") && !(F.methods.has("Комбинированный") && u === "Комб")) continue;
-      if (F.works.size && !F.works.has(w)) continue;
-      if (q && !((o + " " + e + " " + c).toLowerCase().includes(q))) continue;
-      if (!lineMatchesMtr(c)) continue;
-      let x = lines.get(o);
-      if (!x) lines.set(o, x = { o, e, w, u, p: 0, a: 0, up: 0, uf: 0, n: 0, rows: [] });
-      x.p += d.p[i] || 0; x.a += d.a[i] || 0; x.up += d.up[i] || 0; x.uf += d.uf[i] || 0; x.n++;
-      x.rows.push({ c, qp: d.qp[i], qf: d.qf[i], p: d.p[i], a: d.a[i], up: d.up[i], uf: d.uf[i] });
-      if (e) x.e = e;
-    }
+    done.forEach(entry => {
+      const d = entry.data;
+      for (let i = 0; i < d.n; i++) {
+        const u = d.u[i], w2 = d.w[d.wi[i]], e = d.e[d.ei[i]], c = d.c[d.ci[i]], o = d.o[i];
+        if (F.methods.size && !F.methods.has(u) && !(F.methods.has("Хозспособ") && u === "ХС") && !(F.methods.has("Комбинированный") && u === "Комб")) continue;
+        if (F.works.size && !F.works.has(w2)) continue;
+        if (q && !((o + " " + e + " " + c).toLowerCase().includes(q))) continue;
+        if (!lineMatchesMtr(c)) continue;
+        let x = lines.get(o);
+        if (!x) lines.set(o, x = { o, e, w: w2, u, p: 0, a: 0, up: 0, uf: 0, n: 0, rows: [] });
+        x.p += d.p[i] || 0; x.a += d.a[i] || 0; x.up += d.up[i] || 0; x.uf += d.uf[i] || 0; x.n++;
+        x.rows.push({ c, qp: d.qp[i], qf: d.qf[i], p: d.p[i], a: d.a[i], up: d.up[i], uf: d.uf[i] });
+        if (e) x.e = e;
+      }
+    });
     orders = [...lines.values()];
   } else {
     source = "cube";
@@ -2876,24 +2952,59 @@ function refresh() {
   YS = activeYears();
   computeBase();
   buildSidebar();
-  fillQuickLists();
   renderChips();
   renderPerimeter();
   renderKpis();
   renderTab();
   updatePrintCtx();
-  const st = detState();
-  if (st && TAB === "ord") loadDetail(st, null);
+  if (TAB === "ord" || TAB === "eo") {
+    const w = wantedDetail();
+    if (w.combos.length <= DET_AUTO_CAP) DET_FORCE = false;
+    if (w.load) ensureDetailLoaded(w.combos);
+    pruneDetailCache(w.combos.map(c => c.key));
+  }
   saveState();
 }
 const refreshSoon = debounce(refresh, 60);
 
 
-function fillQuickLists() {
-  const dm = document.getElementById("dlModels");
-  const dg = document.getElementById("dlGarages");
-  if (dm) dm.innerHTML = modelPool().slice(0, 400).map(v => `<option value="${esc(v)}">`).join("");
-  if (dg) dg.innerHTML = garagePool().slice(0, 400).map(v => `<option value="${esc(v)}">`).join("");
+/* Живые выпадающие списки бокового поиска (модель / гараж / заказ) —
+   тот же приём, что и в глобальном поиске шапки (#gHits): вариант
+   пересчитывается на каждое нажатие клавиши, а не только по Enter. */
+function qfMatches(kind, raw) {
+  const q = String(raw || "").trim();
+  if (!q) return [];
+  const ql = q.toLowerCase();
+  if (kind === "model") {
+    const pool = modelPool();
+    const exact = pool.filter(v => v.toLowerCase() === ql);
+    const part = pool.filter(v => v.toLowerCase() !== ql && v.toLowerCase().includes(ql));
+    return exact.concat(part).slice(0, 12).map(v => ({ kind, val: v, label: v, sub: "модель" }));
+  }
+  if (kind === "garage") {
+    const pool = garagePool();
+    const exact = pool.filter(v => String(v) === q);
+    const part = pool.filter(v => String(v) !== q && String(v).includes(q));
+    return exact.concat(part).slice(0, 12).map(v => ({ kind, val: String(v), label: String(v), sub: "гараж" }));
+  }
+  if (kind === "order") {
+    return findOrders(q).slice(0, 12).map(r => ({ kind, val: r.o, label: r.o, sub: r.e || "" }));
+  }
+  return [];
+}
+function renderQfDrop(kind, inputId, boxId) {
+  const input = document.getElementById(inputId), box = document.getElementById(boxId);
+  if (!input || !box) return;
+  const raw = input.value;
+  if (!raw.trim()) { box.hidden = true; box.innerHTML = ""; box.__items = null; return; }
+  const items = qfMatches(kind, raw);
+  box.__items = items;
+  if (!items.length) {
+    box.innerHTML = `<div class="none">${kind === "order" ? "Не найден во встроенном срезе — Enter проверит полный указатель заказов" : "Ничего не найдено в текущем срезе"}</div>`;
+  } else {
+    box.innerHTML = items.map((it, i) => `<div class="it" data-qi="${i}"><span>${esc(trunc(it.label, 40))}</span><small>${esc(it.sub || "")}</small></div>`).join("");
+  }
+  box.hidden = false;
 }
 function pickModel(v) {
   v = (v || "").trim(); if (!v) return;
@@ -2919,12 +3030,13 @@ function orderIndex() {
     if (YS && YS.size && !YS.has(String(r.y))) return;
     if (!acc.has(r.o)) acc.set(r.o, { o: r.o, e: r.e, y: r.y, s: r.s });
   });
-  if (D.det && D.det.o) {
-    for (let i = 0; i < D.det.n; i++) {
-      const o = D.det.o[i];
-      if (o && !acc.has(o)) acc.set(o, { o, e: D.det.e[D.det.ei[i]], y: D.det.y, s: D.det.s });
+  D.dets.forEach(entry => {
+    const d = entry.data; if (!d || !d.o) return;
+    for (let i = 0; i < d.n; i++) {
+      const o = d.o[i];
+      if (o && !acc.has(o)) acc.set(o, { o, e: d.e[d.ei[i]], y: d.y, s: d.s });
     }
-  }
+  });
   return [...acc.values()];
 }
 function findOrders(q) {
@@ -2948,26 +3060,17 @@ function showHits(title, items) {
 function applyQuick(kind, raw) {
   raw = (raw || "").trim();
   if (!raw) return;
-  if (kind === "model") {
-    const pool = modelPool();
-    const exact = pool.filter(v => v.toLowerCase() === raw.toLowerCase());
-    const part = pool.filter(v => v.toLowerCase().includes(raw.toLowerCase()));
-    const hits = (exact.length ? exact : part).slice(0, 12);
-    if (hits.length === 1) pickModel(hits[0]);
-    else showHits(hits.length ? "Выберите модель" : "Модель не найдена", hits.map(v => ({ kind: "model", val: v, label: "модель · " + v })));
-  } else if (kind === "garage") {
-    const pool = garagePool();
-    const exact = pool.filter(v => String(v) === raw);
-    const part = pool.filter(v => String(v).includes(raw));
-    const hits = (exact.length ? exact : part).slice(0, 12);
-    if (hits.length === 1) pickGarage(hits[0]);
-    else showHits(hits.length ? "Выберите гаражный номер" : "Гараж не найден", hits.map(v => ({ kind: "garage", val: v, label: "гараж · " + v })));
-  } else if (kind === "order") {
-    const hits = findOrders(raw);
-    if (hits.length === 1) pickOrder(hits[0].o);
-    else if (hits.length > 1) showHits("Выберите заказ", hits.map(v => ({ kind: "order", val: v.o, label: v.o + (v.e ? " · " + v.e : "") })));
-    else jumpToOrder(raw); // не нашли среди встроенного среза — проверяем полный указатель всех заказов
+  const hits = qfMatches(kind, raw);
+  if (hits.length) {
+    if (kind === "model") pickModel(hits[0].val);
+    else if (kind === "garage") pickGarage(hits[0].val);
+    else if (kind === "order") pickOrder(hits[0].val);
+    showHits("", []);
+    return;
   }
+  if (kind === "model") showHits("Модель не найдена в текущем срезе", []);
+  else if (kind === "garage") showHits("Гараж не найден в текущем срезе", []);
+  else if (kind === "order") jumpToOrder(raw); // не нашли среди встроенного среза — проверяем полный указатель всех заказов
 }
 
 /* ---------- Глобальный поиск в шапке ---------- */
@@ -3164,6 +3267,7 @@ function wire() {
     if (document.body.classList.contains("faside") && !e.target.closest("aside")) document.body.classList.remove("faside");
     const cc = e.target.closest("[data-ctxclear]");
     if (cc) { const k = cc.getAttribute("data-ctxclear"); if (k === "eo") SEL.eo = null; if (k === "order") SEL.order = null; renderTab(); return; }
+    if (e.target.closest("#btnLoadDet")) { DET_FORCE = true; refresh(); return; }
     const hit = e.target.closest("#gHits .it");
     if (hit) {
       const box = document.getElementById("gHits");
@@ -3209,6 +3313,7 @@ function wire() {
     if (e.key === "Escape") {
       document.body.classList.remove("faside");
       const box = document.getElementById("gHits"); if (box) box.hidden = true;
+      document.querySelectorAll(".qf-drop").forEach(b => { b.hidden = true; });
       if (document.activeElement && document.activeElement.id === "gSearch") document.activeElement.blur();
       return;
     }

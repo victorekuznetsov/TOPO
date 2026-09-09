@@ -3261,7 +3261,12 @@ PANES.ord = function (host) {
     id: "tComp", sort: "p", maxH: 480,
     rows: cur ? cur.rows.map(r => ({
       c: r.c, matched: !!r.matched, oem: oemOf(r.c), qp: r.qp, qf: r.qf,
-      up: r.qp ? r.p / r.qp : null, ua: r.qf ? r.a / r.qf : null, p: r.p, a: r.a, uso: (r.up || 0) + (r.uf || 0),
+      up: r.qp ? r.p / r.qp : null, ua: r.qf ? r.a / r.qf : null, p: r.p, a: r.a,
+      /* План и факт УСО — раздельно. Раньше они складывались в одну
+         колонку «УСО ₽», и по подрядным заказам состав показывал ровно
+         вдвое больше, чем сам заказ: у заказа 3,1 млн плана и 3,1 млн
+         факта превращались в 6,2 млн в строке компонента. */
+      usoP: r.up || 0, usoF: r.uf || 0,
       ek: r.ek || "", mf: r.mf || "", it: r.it || "", ur: r.ur || 0, nd: r.nd || "", ad: r.ad || ""
     })) : [],
     isSel: r => r.matched,
@@ -3279,7 +3284,8 @@ PANES.ord = function (host) {
       { k: "up", t: "Цена план", n: true, fmt: v => v == null ? "—" : short(v) },
       { k: "ua", t: "Цена факт", n: true, fmt: v => v == null ? "—" : short(v) },
       { k: "p", t: "План ₽", n: true, fmt: short }, { k: "a", t: "Факт ₽", n: true, fmt: short },
-      { k: "uso", t: "УСО ₽", n: true, fmt: shortR }
+      { k: "usoP", t: "План УСО", n: true, fmt: shortR },
+      { k: "usoF", t: "Факт УСО", n: true, fmt: shortR }
     ],
     empty: cur ? "У этой единицы нет позиций ЕКМТР во встроенном срезе" : (source === "detail" ? "Выберите заказ слева" : "Выберите заказ слева — покажем позиции его единицы оборудования")
   });

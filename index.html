@@ -440,6 +440,7 @@ body.ready #boot{display:none}
     <button data-t="uso" role="tab">Контрагенты УСО</button>
     <button data-t="mtr" role="tab">МТР / ЕКМТР</button>
     <button data-t="mat" role="tab">Материалы / ППЗ</button>
+    <button data-t="stk" role="tab">Запасы и вовлечение</button>
     <button data-t="eo" role="tab">Оборудование</button>
     <button data-t="vmz" role="tab">Внутренние ВМЗ</button>
     <button data-t="ord" role="tab">Заказы</button>
@@ -3142,6 +3143,307 @@ function mtrDetail(host, e, useDetail, done) {
     ]
   });
 }
+
+/* ---------- Запасы и вовлечение материалов ---------- */
+/* stock.json — снимок складских остатков (BW MM-M03 «ОСВ по запасам МТР»)
+   на 31.08.2026 и открытых закупок на 27.08.2026, выровненный по словарю
+   материалов mtr.json. Остаток — это СНИМОК на дату, а не период,
+   поэтому фильтр года на него не действует; действует площадка.
+
+   Показатели считаются по общепринятой для запасов методике:
+     оборачиваемость = расход за 12 мес / запас;
+     дни запаса (days of supply) = 365 × запас / расход за 12 мес;
+     неподвижный запас — нет ни одного списания за весь период данных;
+     избыток — запас сверх годовой потребности;
+     вовлечение — какая часть плана следующего года закрывается тем,
+     что уже лежит на складе.
+   Расход за последние 12 месяцев берётся как факт 2026 (8 месяцев до
+   даты снимка) плюс треть факта 2025 — иначе снимок августа сравнивался
+   бы с неполным годом и оборачиваемость завышалась в полтора раза. */
+const STK = { data: null, state: "idle", err: "", byIx: null };
+let QSTK = "";
+let STKVIEW = "all";     // all | dead | overbuy | cover | move | slow
+
+function stkEnsure() {
+  if (STK.state === "ready") return Promise.resolve(STK.data);
+  if (STK.__p) return STK.__p;
+  STK.state = "loading"; STK.err = "";
+  const raw = IS_FILE_PROTO
+    ? loadLocalScript("stock", "stock.local.js")
+    : fetch("stock.json").then(r => { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); });
+  STK.__p = raw.then(d => {
+    let acc = 0; d.k = d.k.map(v => (acc += v));
+    const m = new Map();
+    for (let i = 0; i < d.k.length; i++) m.set(d.k[i], i);
+    STK.data = d; STK.byIx = m; STK.state = "ready";
+    return d;
+  });
+  STK.__p.catch(e => { STK.__p = null; STK.state = "err"; STK.err = String(e && e.message || e); });
+  return STK.__p;
+}
+function stkLoad() {
+  if (STK.state === "ready" && MTRU.state === "ready") return;
+  Promise.all([mtrEnsure(), stkEnsure()]).then(
+    () => { if (TAB === "stk") renderTab(); },
+    () => { if (TAB === "stk") renderTab(); });
+}
+
+/* Свод по материалам: расход, план и запас в одном ряду. Расход и план
+   приходят из витрины материалов (там действуют площадка, год и
+   CAPEX/OPEX), запас и закупка — из снимка (площадка действует, год нет). */
+function stkRows() {
+  const d = MTRU.data, s = STK.data, NY = d.years.length;
+  const okSite = d.sites.map(x => !F.sites.size || F.sites.has(x));
+  const okCx = MTR_CX.map(b => !F.capex.size || (b !== "" && F.capex.has(b)));
+  const iCur = d.years.indexOf("2026"), iPrev = d.years.indexOf("2025"), iNext = d.years.indexOf("2027");
+  const NE = d.ek.length + (s.ek2 || []).length;
+  const A = new Float64Array(NE), P27 = new Float64Array(NE), QP27 = new Float64Array(NE);
+  const U12 = new Float64Array(NE), Q12 = new Float64Array(NE), AALL = new Float64Array(NE), PALL = new Float64Array(NE);
+  for (let i = 0; i < d.k.length; i++) {
+    const c = d.c[i], cx = c & 3, t = c >> 2, yi = t % NY, si = (t / NY) | 0;
+    if (!okSite[si] || !okCx[cx]) continue;
+    const e = d.k[i];
+    AALL[e] += d.a[i]; PALL[e] += d.p[i];
+    if (yi === iCur) { A[e] += d.a[i]; U12[e] += d.a[i]; Q12[e] += d.qf[i]; }
+    if (yi === iPrev) { U12[e] += d.a[i] / 3; Q12[e] += d.qf[i] / 3; }
+    if (yi === iNext) { P27[e] += d.p[i]; QP27[e] += d.qp[i]; }
+  }
+  /* запас по выбранным площадкам; центральный склад считаем отдельно */
+  /* Центральный склад АО «РАЗВИТИЕ» — часть запаса группы по той же
+     номенклатуре, поэтому без фильтра площадки он входит в итог. Как
+     только выбрана конкретная площадка, он из итога уходит и показывается
+     отдельной строкой: иначе площадке приписывался бы чужой запас. */
+  const hubJ = s.sites.indexOf("7100");
+  const useJ = s.sites.map((x, j) => j === hubJ ? !F.sites.size : (!F.sites.size || F.sites.has(x)));
+  const rows = [];
+  for (let i = 0; i < s.k.length; i++) {
+    const e = s.k[i];
+    let sv = 0;
+    for (let j = 0; j < s.sites.length; j++) if (useJ[j]) sv += s.bs[j][i];
+    const hv = hubJ >= 0 ? s.bs[hubJ][i] : 0;
+    const share = s.sv[i] ? sv / s.sv[i] : 0;
+    const sq = s.sq[i] * share;
+    rows.push({
+      ix: e,
+      code: e < d.ek.length ? d.ek[e] : s.ek2[e - d.ek.length],
+      nm: e < d.ek.length ? (d.nm[e] || "") : (s.nm2[e - d.ek.length] || ""),
+      ppz: e < d.ek.length ? (d.ppz[d.ppzi[e]] || "") : "",
+      sv, sq, hub: hv, nl: s.nl[i], wh: s.wh[i],
+      bv: s.bv[i], bq: s.bq[i], bt: s.bt[i], lt: s.lt[i] < 0 ? null : s.lt[i],
+      u12: U12[e], q12: Q12[e], a26: A[e], aAll: AALL[e], p27: P27[e], qp27: QP27[e],
+      tech: e < d.ek.length && stkTech(d.ppzc[d.ppzi[e]]),
+      toir: e < d.ek.length && (AALL[e] > 0 || PALL[e] > 0) && !stkTech(d.ppzc[d.ppzi[e]])
+    });
+  }
+  /* позиции контура ТОиР без остатка — нужны, чтобы видеть дефицит плана */
+  const seen = new Set(rows.map(r => r.ix));
+  for (let e = 0; e < d.ek.length; e++) {
+    if (seen.has(e) || !(P27[e] > 0 || U12[e] > 0)) continue;
+    rows.push({
+      ix: e, code: d.ek[e], nm: d.nm[e] || "", ppz: d.ppz[d.ppzi[e]] || "",
+      sv: 0, sq: 0, hub: 0, nl: 0, wh: 0, bv: 0, bq: 0, bt: 0, lt: null,
+      u12: U12[e], q12: Q12[e], a26: A[e], aAll: AALL[e], p27: P27[e], qp27: QP27[e],
+      tech: stkTech(d.ppzc[d.ppzi[e]]), toir: !stkTech(d.ppzc[d.ppzi[e]])
+    });
+  }
+  rows.forEach(r => {
+    r.dos = r.u12 > 0 ? 365 * r.sv / r.u12 : (r.sv > 0 ? Infinity : null);
+    r.turn = r.sv > 0 ? r.u12 / r.sv : null;
+    r.dead = r.sv > 0 && r.aAll === 0;
+    r.cover = (r.qp27 > 0 && r.sq > 0) ? Math.min(r.sq, r.qp27) * (r.p27 / r.qp27) : 0;
+    r.excess = Math.max(0, r.sv - Math.max(r.p27, r.u12));
+  });
+  return { rows };
+}
+
+/* Номенклатура, которая планируется не ремонтом, а технологией: дизтопливо,
+   реагенты и лабораторная химия, взрывчатые материалы, продукция и ТМЦ
+   собственного производства. Через ремонтные заказы по ним проходят
+   единичные списания, а на складе лежат миллиарды — в показателях
+   оборачиваемости ТОиР они дают бессмысленный результат, поэтому
+   исключаются явно и с указанием суммы. */
+const STK_EXCL = ["2.6.1", "2.4", "2.11", "6"];
+const stkTech = ppzCode => {
+  const c = String(ppzCode || "");
+  if (!c) return false;
+  return STK_EXCL.some(p => c === p || c.startsWith(p + "."));
+};
+
+const DOS_BANDS = [
+  { l: "менее 90 дней", lo: 0, hi: 90, tone: "b", hint: "Дефицитная зона: при срыве поставки работы встанут" },
+  { l: "90–180 дней", lo: 90, hi: 180, tone: "g", hint: "Рабочая норма для запчастей с регулярным расходом" },
+  { l: "180–365 дней", lo: 180, hi: 365, tone: "g", hint: "Верх нормы; для длинных поставок оправдано" },
+  { l: "1–3 года", lo: 365, hi: 1095, tone: "w", hint: "Медленно оборачиваемый запас — деньги заморожены" },
+  { l: "более 3 лет", lo: 1095, hi: Infinity, tone: "b", hint: "Практически неликвид, даже если расход формально есть" }
+];
+
+PANES.stk = function (host) {
+  if (STK.state !== "ready" || MTRU.state !== "ready") stkLoad();
+  if (STK.state === "err" || MTRU.state === "err") {
+    host.innerHTML = callout("bad", `Не удалось загрузить данные запасов (${esc(STK.err || MTRU.err)}). При открытии страницы с диска рядом с index.html должны лежать <code>mtr.local.js</code> и <code>stock.local.js</code>. <button type="button" class="minibtn" id="btnStkRetry">Повторить</button>`);
+    const b = host.querySelector("#btnStkRetry");
+    if (b) b.onclick = () => { STK.state = "idle"; STK.__p = null; MTRU.state = MTRU.state === "err" ? "idle" : MTRU.state; MTRU_P = MTRU.state === "idle" ? null : MTRU_P; renderTab(); };
+    return;
+  }
+  if (STK.state !== "ready" || MTRU.state !== "ready") {
+    host.innerHTML = callout("info", "Загружаются витрина материалов и снимок складских остатков (~25 МБ вместе, при публикации отдаются сжатыми). Они не грузятся при старте, чтобы не задерживать открытие дашборда.");
+    return;
+  }
+  const s = STK.data;
+  const { rows } = stkRows();
+  const toir = rows.filter(r => r.toir);
+  const stockTO = sum(toir, r => r.sv);
+  const stockAll = sum(rows, r => r.sv);
+  const techV = sum(rows.filter(r => r.tech), r => r.sv);
+  const hubTO = sum(toir, r => r.hub);
+  const use12 = sum(toir, r => r.u12);
+  const turn = stockTO ? use12 / stockTO : 0;
+  const dead = toir.filter(r => r.dead);
+  const noMove = toir.filter(r => r.sv > 0 && !(r.u12 > 0));
+  const planned = toir.filter(r => r.p27 > 0);
+  const p27 = sum(planned, r => r.p27);
+  const coverV = sum(planned, r => r.cover);
+  const overbuy = toir.filter(r => r.bv > 0 && r.sq > 0 && r.dos != null && r.dos > 365);
+  const excess = sum(toir, r => r.excess);
+  const longLead = toir.filter(r => r.lt != null && r.lt > 180 && !r.sv && r.p27 > 0);
+
+  /* --- рабочие списки --- */
+  const VIEWS = {
+    all: { t: "Все позиции", f: r => r.sv > 0 || r.p27 > 0, d: "запас или план 2027" },
+    dead: { t: "Неподвижный запас", f: r => r.dead, d: "лежит, но ни одного списания за весь период данных" },
+    slow: { t: "Медленно оборачиваемый", f: r => r.dos != null && isFinite(r.dos) && r.dos > 365, d: "дней запаса больше года" },
+    overbuy: { t: "Закупка поверх запаса", f: r => r.bv > 0 && r.sq > 0 && r.dos != null && r.dos > 365, d: "открытая заявка при запасе больше года расхода или вовсе без расхода" },
+    cover: { t: "Вовлечь в план 2027", f: r => r.cover > 0, d: "план года можно закрыть тем, что уже лежит" },
+    gap: { t: "План без запаса", f: r => r.p27 > 0 && !r.sv, d: "заявлено на 2027, на складе нет" }
+  };
+  const V = VIEWS[STKVIEW] || VIEWS.all;
+  const q = QSTK.trim().toLowerCase();
+  let list = toir.filter(V.f);
+  if (q) list = list.filter(r => r.code.toLowerCase().includes(q) || r.nm.toLowerCase().includes(q) || r.ppz.toLowerCase().includes(q));
+  list.sort((a, b) => (b.sv + b.bv + b.p27) - (a.sv + a.bv + a.p27));
+
+  /* --- ППЗ --- */
+  const pm = new Map();
+  toir.forEach(r => {
+    const k = r.ppz || "ППЗ не определена";
+    let x = pm.get(k); if (!x) pm.set(k, x = { name: k, sv: 0, u12: 0, p27: 0, cover: 0, dead: 0, n: 0, bv: 0 });
+    x.sv += r.sv; x.u12 += r.u12; x.p27 += r.p27; x.cover += r.cover; x.bv += r.bv;
+    if (r.dead) x.dead += r.sv;
+    if (r.sv > 0) x.n++;
+  });
+  const ppzRows = [...pm.values()].map(x => Object.assign(x, {
+    dos: x.u12 > 0 ? 365 * x.sv / x.u12 : null,
+    turn: x.sv > 0 ? x.u12 / x.sv : null,
+    cv: x.p27 ? 100 * x.cover / x.p27 : null
+  })).sort((a, b) => b.sv - a.sv);
+
+  const bands = DOS_BANDS.map(bd => {
+    const g = toir.filter(r => r.sv > 0 && r.dos != null && isFinite(r.dos) && r.dos >= bd.lo && r.dos < bd.hi);
+    return { ...bd, n: g.length, v: sum(g, r => r.sv) };
+  });
+  const noMoveV = sum(noMove, r => r.sv);
+
+  host.innerHTML =
+    callout("info", `Снимок складских остатков BW MM-M03 на <b>${esc(s.asOf)}</b> и открытых закупок на 27.08.2026, сведённые с планом и фактом PM-06 по коду ЕКМТР. Остаток — это состояние на дату, а не оборот за период, поэтому <b>фильтр года на запас не действует</b> (на расход и план — действует). Фильтр площадки действует и на запас; центральный склад АО «РАЗВИТИЕ» показан отдельно, потому что он хранит номенклатуру для всех площадок.`) +
+    (stockAll > stockTO ? callout("warn", `Весь складской запас в выгрузке — ${shortR(stockAll)}, в контур ТОиР попадает ${shortR(stockTO)}. Вне контура две группы: номенклатура, по которой через ремонтные заказы вообще ничего не проходило (руда, золото, прочие ТМЦ производства), и технологические расходники ${shortR(techV)} — дизтопливо, реагенты, взрывчатые материалы, продукция собственного производства: они планируются технологией, а не ремонтом, и в показателях оборачиваемости ТОиР давали бы бессмыслицу (по дизтопливу — тысячи лет запаса). Ни та, ни другая группа в расчётах ниже не участвует.`) : "") +
+    `<div class="kpis" id="stkKpi"></div>
+     <div class="grid g2">
+       ${card("Структура запаса по сроку хранения", "дней запаса = 365 × остаток / расход за 12 месяцев", "cStkD", { foot: "Ориентир для запчастей горной техники: 90–180 дней по регулярной номенклатуре и 1–3 года по страховым узлам с длинной поставкой. Всё, что дольше без причины «страховой запас», — замороженные деньги." })}
+       ${card("Где лежит запас", "по балансовым единицам", "cStkS", { foot: "Центральный склад — это хаб снабжения: держать там номенклатуру нормально, но она должна доходить до площадок к началу работ, иначе площадка закупает второй раз." })}
+     </div>
+     <div class="grid">${card("Подгруппы плана закупа", "оборачиваемость и вовлечение по ППЗ", "tStkP", { tools: dlBtn("tStkP") })}</div>
+     <div class="grid">
+       ${card("Рабочие списки", V.d, "tStkL", {
+      tools: Object.keys(VIEWS).map(k => `<button class="minibtn${k === STKVIEW ? " on" : ""}" type="button" data-stkv="${k}">${esc(VIEWS[k].t)}</button>`).join(" ") + " " + dlBtn("tStkL"),
+      foot: "Списки — это готовые задания: что инвентаризовать, что снять с закупки, что вовлечь в план и что везти между площадками. Столбец «Дней запаса» пуст, если за 12 месяцев не было ни одного списания."
+    })}
+     </div>`;
+
+  document.getElementById("stkKpi").innerHTML = kpi([
+    { l: "Запас ТОиР", v: shortR(stockTO), s: `${num(toir.filter(r => r.sv > 0).length)} позиций · из них на центральном складе ${short(hubTO)}`, tone: "accent" },
+    { l: "Оборачиваемость", v: turn ? turn.toFixed(2) + " об./год" : "—", s: turn ? `срок хранения ${num(365 / turn)} дней · расход 12 мес ${short(use12)}` : "", tone: turn < 1 ? "warn" : "" },
+    { l: "Неподвижный запас", v: shortR(sum(dead, r => r.sv)), s: `${num(dead.length)} позиций без единого списания · без движения 12 мес ещё ${short(noMoveV)}`, tone: "warn" },
+    { l: "Запас сверх годовой потребности", v: shortR(excess), s: `${pct(stockTO ? 100 * excess / stockTO : null)} запаса ТОиР`, tone: excess > stockTO * .4 ? "warn" : "" },
+    { l: "Вовлечение в план 2027", v: pct(p27 ? 100 * coverV / p27 : null), s: `${shortR(coverV)} из ${short(p27)} плана уже лежит на складах`, tone: "accent" },
+    { l: "Закупка поверх запаса", v: shortR(sum(overbuy, r => r.bv)), s: `${num(overbuy.length)} позиций: заявка открыта, а запаса больше года расхода или расхода нет вовсе`, tone: "warn" }
+  ]);
+
+  CHART.bars(host.querySelector("#cStkD"), {
+    height: 260, horizontal: true, labelW: 150, valueFmt: shortR,
+    labels: bands.map(b => b.l).concat(["без расхода 12 мес"]),
+    series: [{ name: "Запас", color: "var(--c1)", data: bands.map(b => b.v).concat([noMoveV]) }]
+  });
+  /* стоимость по площадкам берём прямо из снимка, ограничив контуром ТОиР:
+     фильтр площадки слева тут намеренно не применяется — смысл диаграммы
+     в том, чтобы видеть, где физически лежит запас всей номенклатуры */
+  const inTo = new Set(toir.map(r => r.ix));
+  const siteAgg = s.sites.map((code, j) => {
+    let v = 0;
+    for (let i = 0; i < s.k.length; i++) if (inTo.has(s.k[i])) v += s.bs[j][i];
+    return { name: code === "7100" ? "Центральный склад" : (M.sites[code] || code), v };
+  });
+  const STK_COL = ["var(--c1)", "var(--c4)", "var(--c3)", "var(--c5)", "var(--c7)", "var(--c6)"];
+  CHART.donut(host.querySelector("#cStkS"), {
+    height: 260, valueFmt: shortR, centerLabel: "запас ТОиР",
+    items: siteAgg.filter(x => x.v > 0).sort((a, b) => b.v - a.v)
+      .map((x, i) => ({ name: x.name, value: x.v, color: STK_COL[i % STK_COL.length] }))
+  });
+
+  tableView(host.querySelector("#tStkP"), {
+    id: "tStkP", sort: "sv", rows: ppzRows, bar: "sv", maxH: 380,
+    cols: [
+      { k: "name", t: "Подгруппа плана закупа", cls: "name" },
+      { k: "n", t: "Позиций", n: true, fmt: num },
+      { k: "sv", t: "Запас", n: true, fmt: shortR },
+      { k: "u12", t: "Расход 12 мес", n: true, fmt: shortR },
+      { k: "turn", t: "Оборотов в год", n: true, fmt: v => v == null ? "—" : `<span class="tag ${v >= 1.5 ? "g" : v >= 0.7 ? "w" : "b"}">${NF2.format(v)}</span>` },
+      { k: "dos", t: "Дней запаса", n: true, fmt: v => v == null ? "—" : num(v) },
+      { k: "dead", t: "Неподвижный", n: true, fmt: v => v ? shortR(v) : "—" },
+      { k: "p27", t: "План 2027", n: true, fmt: shortR },
+      { k: "cv", t: "Покрыто запасом", n: true, fmt: v => v == null ? "—" : `<span class="tag ${v >= 50 ? "g" : v >= 20 ? "w" : "n"}">${pct(v)}</span>`, hint: "Какая доля плана 2027 закрывается имеющимся остатком" },
+      { k: "bv", t: "Открытая закупка", n: true, fmt: v => v ? shortR(v) : "—" }
+    ],
+    foot: { name: "Итого", n: num(sum(ppzRows, r => r.n)), sv: shortR(stockTO), u12: shortR(use12), p27: shortR(p27), bv: shortR(sum(ppzRows, r => r.bv)) }
+  });
+
+  host.insertAdjacentHTML("beforeend",
+    `<div class="quickfind" style="margin:12px 0"><label>Поиск в списке<input type="search" id="qStk" placeholder="№ ЕКМТР, наименование или ППЗ" value="${esc(QSTK)}"></label></div>`);
+  const lh = host.querySelector("#tStkL");
+  tableView(lh, {
+    id: "tStkL", sort: "sv", rows: list, bar: "sv", maxH: 560, limit: 600,
+    empty: "В этом списке нет позиций при текущих фильтрах",
+    onRow: r => { const i = MTRU.ix.get(r.code); if (i != null) { SELMAT = i; SELPPZ = null; QMAT = ""; setTab("mat"); } },
+    cols: [
+      { k: "code", t: "№ ЕКМТР", cls: "dim", fmt: v => `<code style="font-size:11px">${esc(v)}</code>` },
+      { k: "nm", t: "Наименование", cls: "name" },
+      { k: "ppz", t: "ППЗ", cls: "dim name" },
+      { k: "sq", t: "Остаток, кол-во", n: true, fmt: v => v ? num(v) : "—" },
+      { k: "sv", t: "Остаток ₽", n: true, fmt: v => v ? shortR(v) : "—" },
+      { k: "hub", t: "Из них на центр. складе", n: true, fmt: v => v ? shortR(v) : "—" },
+      { k: "u12", t: "Расход 12 мес", n: true, fmt: v => v ? shortR(v) : "—" },
+      { k: "dos", t: "Дней запаса", n: true, fmt: v => v == null ? "—" : !isFinite(v) ? `<span class="tag b">нет расхода</span>` : `<span class="tag ${v < 90 ? "b" : v <= 365 ? "g" : v <= 1095 ? "w" : "b"}">${num(v)}</span>` },
+      { k: "p27", t: "План 2027", n: true, fmt: v => v ? shortR(v) : "—" },
+      { k: "cover", t: "Закрыто запасом", n: true, fmt: v => v ? shortR(v) : "—", hint: "Часть плана 2027, которую можно взять со склада вместо закупки" },
+      { k: "bv", t: "Открытая закупка", n: true, fmt: v => v ? shortR(v) : "—" },
+      { k: "lt", t: "Срок поставки, дн", n: true, fmt: v => v == null ? "—" : `<span class="tag ${v > 180 ? "w" : "n"}">${num(v)}</span>`, hint: "Средний срок от заявки до плановой поставки по открытым закупкам" },
+      { k: "wh", t: "Складов", n: true, fmt: v => v || "—", hint: "На скольких складах лежит позиция" }
+    ],
+    foot: { nm: `Итого по ${num(list.length)} позициям`, sv: shortR(sum(list, r => r.sv)), u12: shortR(sum(list, r => r.u12)), p27: shortR(sum(list, r => r.p27)), cover: shortR(sum(list, r => r.cover)), bv: shortR(sum(list, r => r.bv)) }
+  });
+
+  if (STKVIEW === "gap" && longLead.length)
+    lh.insertAdjacentHTML("afterbegin", callout("warn", `Из позиций плана без запаса у <b>${num(longLead.length)}</b> средний срок поставки превышает 180 дней, а плана по ним ${shortR(sum(longLead, r => r.p27))}. Заявки по ним нужно размещать не в год потребности, а заранее — иначе материал придёт после ремонта.`));
+  if (STKVIEW === "dead")
+    lh.insertAdjacentHTML("afterbegin", callout("info", `Формально в SAP помечено как неликвид (НЛИ) и невостребованное (НВИ) ${shortR(sum(toir, r => r.nl))}, а фактически без движения за весь период данных лежит ${shortR(sum(dead, r => r.sv))}. Метка отстаёт от фактического движения — это первое, что стоит привести в порядок.`));
+
+  host.querySelectorAll("[data-stkv]").forEach(b => b.onclick = () => { STKVIEW = b.getAttribute("data-stkv"); renderTab(); });
+  const qi = host.querySelector("#qStk");
+  if (qi) qi.oninput = debounce(e => {
+    QSTK = e.target.value; renderTab();
+    const n = document.getElementById("qStk");
+    if (n) { n.focus(); n.setSelectionRange(n.value.length, n.value.length); }
+  }, 260);
+};
 
 PANES.eo = function (host) {
   const keys = allowedEoKeys();

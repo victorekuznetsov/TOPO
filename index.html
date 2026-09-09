@@ -1290,21 +1290,37 @@ function activeYears() {
 }
 let YS = new Set();
 function inMonth(m) { if (!m) return true; if (F.mFrom && m < F.mFrom) return false; if (F.mTo && m > F.mTo) return false; return true; }
-/* CAPEX/OPEX — эвристика по названию вида работы ТОРО: в выгрузке нет
-   отдельного бухгалтерского признака капитализации, только свободный
-   текст. CAPEX — однозначные сигналы: «Капитальный/Капитализируемый
-   ремонт» и его номерные варианты, абревиатура «КР <узел>» (капитальный
-   ремонт узла — двигателя, КПП и т.д.), инвестиционные и строительно-
-   монтажные работы. Всё остальное (ТО, текущий ремонт, диагностика,
-   смазка, гарантийный ремонт и проч.) — OPEX. «Не присвоено» — отдельным
-   «не определено», не сваливается ни в CAPEX, ни в OPEX. Таблица на
-   вкладке «CAPEX / OPEX» показывает разбивку по видам работ целиком —
-   эвристику можно проверить и оспорить по каждой строке. */
-const CAPEX_RE = /^капитал|^капитализ|^кр\s|инвестиц|строительно-монтаж/i;
-function capexBucket(w) {
-  const s = String(w || "").trim();
-  if (!s || s === "Не присвоено") return "Не определено";
-  return CAPEX_RE.test(s) ? "CAPEX" : "OPEX";
+/* CAPEX/OPEX — реальный бухгалтерский признак SAP «СПП-элемент Причина
+   инвестиций» (не выгружался в combo/eoList — собран отдельно в
+   capex.json из тех же 23 сырых выгрузок PM-06, на гранулярности
+   площадка×год×парк×способ×вид работы×причина, без базис-месяца).
+   CAPEX — «Капитализируемые ремонты» и «Компоненты». OPEX — все
+   варианты, начинающиеся на «OPEX» («OPEX (ремонты и ТО)», «OPEX УПА
+   (CAPEX Рудных БЕ)» и т.п. — «CAPEX» в скобках это только название
+   расчётной статьи, сама причина явно OPEX). Остальное («Не присвоено»,
+   «ОВП» — вместе 1,4% контура) не относится ни к CAPEX, ни к OPEX и не
+   входит в суммы на вкладке «CAPEX / OPEX». */
+const CAPEX_REASONS = new Set(["Капитализируемые ремонты", "Компоненты"]);
+function capexBucket(reason) {
+  const s = String(reason || "").trim();
+  if (CAPEX_REASONS.has(s)) return "CAPEX";
+  if (/^opex/i.test(s)) return "OPEX";
+  return null;
+}
+function passCapexScope(r) {
+  if (F.sites.size && !F.sites.has(r.s)) return false;
+  if (!YS.has(String(r.y))) return false;
+  if (F.methods.size && !F.methods.has(r.u)) return false;
+  if (F.fleets.size && !F.fleets.has(r.f)) return false;
+  if (F.works.size && !F.works.has(r.w)) return false;
+  return true;
+}
+function passCapex(r) {
+  if (!passCapexScope(r)) return false;
+  const b = capexBucket(r.r);
+  if (!b) return false;
+  if (F.capex.size && !F.capex.has(b)) return false;
+  return true;
 }
 function passCombo(r) {
   if (F.sites.size && !F.sites.has(r.s)) return false;
@@ -1312,7 +1328,6 @@ function passCombo(r) {
   if (F.methods.size && !F.methods.has(r.u)) return false;
   if (F.fleets.size && !F.fleets.has(r.f)) return false;
   if (F.works.size && !F.works.has(r.w)) return false;
-  if (F.capex.size && !F.capex.has(capexBucket(r.w))) return false;
   if (!inMonth(r.m)) return false;
   return true;
 }
@@ -1515,8 +1530,8 @@ const FDEF = {
   fleets: { set: () => F.fleets, items: () => groupBy(M.combo, "f").sort(bySum).map(x => x.name), label: v => v },
   works: { set: () => F.works, items: () => groupBy(M.combo, "w").sort(bySum).map(x => x.name), label: v => v, search: true },
   capex: {
-    set: () => F.capex, items: () => ["CAPEX", "OPEX", "Не определено"], label: v => v,
-    note: () => "Определяется по тексту «Вид работы ТОРО» — в источнике нет отдельного бухгалтерского признака капитализации. CAPEX — капитальный/капитализируемый ремонт, «КР <узел>», инвестиционные и строительно-монтажные работы. «Не определено» — вид работы не присвоен. Полная разбивка и обоснование — на вкладке «CAPEX / OPEX». Недоступен при активном фильтре техники (класс/производитель/модель) — витрина единиц оборудования не хранит вид работы."
+    set: () => F.capex, items: () => ["CAPEX", "OPEX"], label: v => v,
+    note: () => "Признак SAP «Причина инвестиций» — собран отдельно от основной витрины, без разреза по базис-месяцу и по единице оборудования. Действует только на вкладке «CAPEX / OPEX»: на Сводку, Динамику и остальные вкладки не влияет — там этого измерения нет. Подробности — на самой вкладке."
   },
   kcls: { set: () => F.kcls, items: () => M.ktgClasses || [], label: v => v, note: () => "Справочник классов КТГ не пересекается с группами МВЗ — связь строится по совпадению единиц оборудования (" + num(M.ktgMatched || 0) + " из " + num((M.ktg || []).length) + ")." },
   makers: { set: () => F.makers, items: () => M.ktgMakers || [], label: v => v, search: true },
@@ -2064,96 +2079,99 @@ function linkRows() {
 }
 
 /* ---------- CAPEX / OPEX ---------- */
-const CAPEX_ORDER = ["CAPEX", "OPEX", "Не определено"];
-const CAPEX_COLOR = { "CAPEX": "var(--c4)", "OPEX": "var(--c1)", "Не определено": "var(--c5)" };
+const CAPEX_COLOR = { "CAPEX": "var(--c4)", "OPEX": "var(--c1)" };
 PANES.capex = function (host) {
-  if (BASE.byEo) {
-    host.innerHTML = callout("info", (OPT.excludeUnassigned ? "«Исключить неопознанное оборудование» " : "Активен фильтр уровня единицы оборудования ") + `— классификация CAPEX/OPEX построена на виде работы ТОРО, а витрина единиц оборудования его не хранит. Снимите фильтр класса/производителя/модели (и «Исключить неопознанное оборудование»), чтобы вернуть разбивку.`);
-    return;
-  }
-  const rows = BASE.rows;
-  const bkt = r => capexBucket(r.w);
-  const byBucket = groupBy(rows, bkt);
-  const bm = new Map(byBucket.map(x => [x.name, x]));
-  const get = k => bm.get(k) || { p: 0, a: 0, up: 0, uf: 0, tp: 0, ta: 0, o: 0, exec: null };
-  const capex = get("CAPEX"), opex = get("OPEX"), undef = get("Не определено");
-  const totPlan = capex.tp + opex.tp + undef.tp, totFact = capex.ta + opex.ta + undef.ta;
-  const capexShareP = totPlan ? 100 * capex.tp / totPlan : 0;
-  const capexShareA = totFact ? 100 * capex.ta / totFact : 0;
+  const scoped = (M.capex || []).filter(passCapexScope);
+  const src = scoped.filter(r => { const b = capexBucket(r.r); return b && (!F.capex.size || F.capex.has(b)); });
+
+  const tot = { CAPEX: { p: 0, a: 0, up: 0, uf: 0 }, OPEX: { p: 0, a: 0, up: 0, uf: 0 } };
+  src.forEach(r => { const t = tot[capexBucket(r.r)]; t.p += r.p || 0; t.a += r.a || 0; t.up += r.up || 0; t.uf += r.uf || 0; });
+  const capexTp = tot.CAPEX.p + tot.CAPEX.up, capexTa = tot.CAPEX.a + tot.CAPEX.uf;
+  const opexTp = tot.OPEX.p + tot.OPEX.up, opexTa = tot.OPEX.a + tot.OPEX.uf;
+  const totPlan = capexTp + opexTp, totFact = capexTa + opexTa;
+  const capexShareP = totPlan ? 100 * capexTp / totPlan : 0;
+  const capexShareA = totFact ? 100 * capexTa / totFact : 0;
+  const execC = capexTp ? 100 * capexTa / capexTp : null;
+  const execO = opexTp ? 100 * opexTa / opexTp : null;
 
   const byYear = new Map();
-  rows.forEach(r => {
-    const y = String(r.y), k = bkt(r);
-    let x = byYear.get(y); if (!x) byYear.set(y, x = {});
-    let b = x[k]; if (!b) x[k] = b = { tp: 0, ta: 0 };
-    b.tp += (r.p || 0) + (r.up || 0); b.ta += (r.a || 0) + (r.uf || 0);
+  src.forEach(r => {
+    const y = String(r.y), b = capexBucket(r.r);
+    let x = byYear.get(y); if (!x) byYear.set(y, x = { CAPEX: { tp: 0, ta: 0 }, OPEX: { tp: 0, ta: 0 } });
+    x[b].tp += (r.p || 0) + (r.up || 0); x[b].ta += (r.a || 0) + (r.uf || 0);
   });
   const years = [...byYear.keys()].sort();
 
   const bySite = new Map();
-  rows.forEach(r => {
-    const s = r.s, k = bkt(r);
-    let x = bySite.get(s); if (!x) bySite.set(s, x = {});
-    let b = x[k]; if (!b) x[k] = b = { tp: 0, ta: 0 };
-    b.tp += (r.p || 0) + (r.up || 0); b.ta += (r.a || 0) + (r.uf || 0);
+  src.forEach(r => {
+    const s = r.s, b = capexBucket(r.r);
+    let x = bySite.get(s); if (!x) bySite.set(s, x = { CAPEX: { tp: 0, ta: 0 }, OPEX: { tp: 0, ta: 0 } });
+    x[b].tp += (r.p || 0) + (r.up || 0); x[b].ta += (r.a || 0) + (r.uf || 0);
   });
-  const sitesSorted = [...bySite.keys()].sort((a, b) => sum(CAPEX_ORDER, k => (bySite.get(b)[k] || {}).ta || 0) - sum(CAPEX_ORDER, k => (bySite.get(a)[k] || {}).ta || 0));
+  const sitesSorted = [...bySite.keys()].sort((a, b) => (bySite.get(b).CAPEX.ta + bySite.get(b).OPEX.ta) - (bySite.get(a).CAPEX.ta + bySite.get(a).OPEX.ta));
 
-  const wrows = groupBy(rows, "w").map(x => ({ w: x.name, bucket: capexBucket(x.name), tp: x.tp, ta: x.ta, exec: x.exec, o: x.o }))
-    .filter(x => x.tp || x.ta).sort((a, b) => b.tp - a.tp);
+  const byReason = new Map();
+  scoped.forEach(r => {
+    const bucket = capexBucket(r.r);
+    if (bucket && F.capex.size && !F.capex.has(bucket)) return;
+    let x = byReason.get(r.r); if (!x) byReason.set(r.r, x = { r: r.r, bucket, tp: 0, ta: 0 });
+    x.tp += (r.p || 0) + (r.up || 0); x.ta += (r.a || 0) + (r.uf || 0);
+  });
+  const rrows = [...byReason.values()].filter(x => x.tp || x.ta).sort((a, b) => b.tp - a.tp)
+    .map(x => ({ ...x, exec: x.tp ? 100 * x.ta / x.tp : null }));
+  const exclP = sum(rrows.filter(x => !x.bucket), x => x.tp);
 
   host.innerHTML =
     `<div class="kpis" id="capexKpi"></div>` +
-    callout("info", `CAPEX/OPEX определяется эвристикой по тексту «Вид работы ТОРО» — в источнике нет отдельного бухгалтерского признака капитализации. <b>CAPEX</b>: капитальный/капитализируемый ремонт, «КР &lt;узел&gt;» (капремонт двигателя, КПП, ходовой и т.п.), инвестиционные и строительно-монтажные работы. <b>OPEX</b>: техобслуживание, текущий ремонт, диагностика, смазка, гарантийный ремонт и всё остальное. <b>Не определено</b> — вид работы не присвоен в источнике. Полный список видов работ с разметкой — в таблице внизу; при несогласии с разметкой ориентируйтесь на неё, а не на итоговые суммы выше.`) +
-    (undef.tp || undef.ta ? callout("warn", `«Не определено» — ${shortR(undef.tp)} плана (${pct(totPlan ? 100 * undef.tp / totPlan : 0)} контура). Эти работы не входят ни в CAPEX, ни в OPEX ни в одной сумме на этой вкладке.`) : "") +
+    callout("info", `CAPEX/OPEX — признак SAP «СПП-элемент Причина инвестиций» (не эвристика). <b>CAPEX</b> — «Капитализируемые ремонты» и «Компоненты». <b>OPEX</b> — все причины, начинающиеся на «OPEX» (в т.ч. «OPEX УПА (CAPEX Рудных БЕ)» — CAPEX в скобках это только название статьи расчёта, причина явно OPEX). Собран отдельно от основной витрины, без разреза по базис-месяцу и по единице оборудования — фильтры «Период» и техника (класс/производитель/модель/гараж) на эту вкладку не действуют. Полный список причин — в таблице внизу.`) +
+    (exclP ? callout("warn", `«Не присвоено» / «ОВП» — ${shortR(exclP)} плана (${pct(totPlan ? 100 * exclP / (totPlan + exclP) : 0)} контура вкладки). Без явной причины инвестиций — не входят ни в CAPEX, ни в OPEX ни в одной сумме здесь.`) : "") +
     `<div class="grid g2">
        ${card("CAPEX и OPEX по годам", "план и факт, ₽", "cCpxYear")}
        ${card("Доля CAPEX в плане", "по текущему срезу", "cCpxDonut")}
      </div>
      <div class="grid">${card("CAPEX и OPEX по площадкам", "факт, ₽", "cCpxSite")}</div>
-     <div class="grid">${card("Разметка по видам работ ТОРО", "план, факт и исполнение — проверка эвристики", "tCpxWork", { tools: dlBtn("tCpxWork") })}</div>`;
+     <div class="grid">${card("Причина инвестиций", "план, факт и исполнение по каждому значению признака", "tCpxWork", { tools: dlBtn("tCpxWork") })}</div>`;
 
   document.getElementById("capexKpi").innerHTML = kpi([
-    { l: "План CAPEX", v: shortR(capex.tp), s: pct(capexShareP) + " плана контура", tone: "accent" },
-    { l: "Факт CAPEX", v: shortR(capex.ta), s: "исполнение " + pct(capex.exec), tone: capex.exec == null ? "" : capex.exec >= 90 ? "good" : capex.exec >= 70 ? "warn" : "bad" },
-    { l: "План OPEX", v: shortR(opex.tp), s: pct(totPlan ? 100 * opex.tp / totPlan : 0) + " плана контура" },
-    { l: "Факт OPEX", v: shortR(opex.ta), s: "исполнение " + pct(opex.exec), tone: opex.exec == null ? "" : opex.exec >= 90 ? "good" : opex.exec >= 70 ? "warn" : "bad" },
+    { l: "План CAPEX", v: shortR(capexTp), s: pct(capexShareP) + " плана вкладки", tone: "accent" },
+    { l: "Факт CAPEX", v: shortR(capexTa), s: "исполнение " + pct(execC), tone: execC == null ? "" : execC >= 90 ? "good" : execC >= 70 ? "warn" : "bad" },
+    { l: "План OPEX", v: shortR(opexTp), s: pct(totPlan ? 100 * opexTp / totPlan : 0) + " плана вкладки" },
+    { l: "Факт OPEX", v: shortR(opexTa), s: "исполнение " + pct(execO), tone: execO == null ? "" : execO >= 90 ? "good" : execO >= 70 ? "warn" : "bad" },
     { l: "Доля CAPEX в факте", v: pct(capexShareA), s: `против ${pct(capexShareP)} в плане`, tone: "info" }
   ]);
 
   CHART.bars(host.querySelector("#cCpxYear"), {
     height: 260, labels: years,
     series: [
-      { name: "План CAPEX", color: "var(--c6)", data: years.map(y => (byYear.get(y).CAPEX || {}).tp || 0) },
-      { name: "Факт CAPEX", color: CAPEX_COLOR.CAPEX, data: years.map(y => (byYear.get(y).CAPEX || {}).ta || 0) },
-      { name: "План OPEX", color: "var(--c7)", data: years.map(y => (byYear.get(y).OPEX || {}).tp || 0) },
-      { name: "Факт OPEX", color: CAPEX_COLOR.OPEX, data: years.map(y => (byYear.get(y).OPEX || {}).ta || 0) }
+      { name: "План CAPEX", color: "var(--c6)", data: years.map(y => byYear.get(y).CAPEX.tp) },
+      { name: "Факт CAPEX", color: CAPEX_COLOR.CAPEX, data: years.map(y => byYear.get(y).CAPEX.ta) },
+      { name: "План OPEX", color: "var(--c7)", data: years.map(y => byYear.get(y).OPEX.tp) },
+      { name: "Факт OPEX", color: CAPEX_COLOR.OPEX, data: years.map(y => byYear.get(y).OPEX.ta) }
     ]
   });
   CHART.donut(host.querySelector("#cCpxDonut"), {
-    height: 230, centerLabel: "план контура",
-    items: CAPEX_ORDER.map(k => ({ name: k, value: get(k).tp, color: CAPEX_COLOR[k] })).filter(x => x.value)
+    height: 230, centerLabel: "план вкладки",
+    items: [{ name: "CAPEX", value: capexTp, color: CAPEX_COLOR.CAPEX }, { name: "OPEX", value: opexTp, color: CAPEX_COLOR.OPEX }].filter(x => x.value)
   });
   const top = sitesSorted.slice(0, 12);
   CHART.bars(host.querySelector("#cCpxSite"), {
     height: Math.max(160, 44 * top.length + 40), horizontal: true, labelW: 165,
     labels: top.map(s => M.sites[s] || s),
     series: [
-      { name: "Факт CAPEX", color: CAPEX_COLOR.CAPEX, data: top.map(s => (bySite.get(s).CAPEX || {}).ta || 0) },
-      { name: "Факт OPEX", color: CAPEX_COLOR.OPEX, data: top.map(s => (bySite.get(s).OPEX || {}).ta || 0) }
+      { name: "Факт CAPEX", color: CAPEX_COLOR.CAPEX, data: top.map(s => bySite.get(s).CAPEX.ta) },
+      { name: "Факт OPEX", color: CAPEX_COLOR.OPEX, data: top.map(s => bySite.get(s).OPEX.ta) }
     ]
   });
   tableView(host.querySelector("#tCpxWork"), {
-    id: "tCpxWork", sort: "tp", rows: wrows, bar: "tp", maxH: 460,
+    id: "tCpxWork", sort: "tp", rows: rrows, bar: "tp", maxH: 400,
     cols: [
-      { k: "w", t: "Вид работы ТОРО", cls: "name" },
-      { k: "bucket", t: "Классификация", fmt: v => `<span class="tag ${v === "CAPEX" ? "g" : v === "OPEX" ? "" : "n"}">${esc(v)}</span>` },
-      { k: "o", t: "Заказо-строк", n: true, fmt: num },
+      { k: "r", t: "Причина инвестиций", cls: "name" },
+      { k: "bucket", t: "Классификация", fmt: v => v ? `<span class="tag ${v === "CAPEX" ? "g" : ""}">${esc(v)}</span>` : `<span class="tag n">не учитывается</span>` },
       { k: "tp", t: "План ТОиР", n: true, fmt: shortR },
       { k: "ta", t: "Факт ТОиР", n: true, fmt: shortR },
       { k: "exec", t: "Исполнение", n: true, fmt: v => v == null ? "—" : pct(v) }
     ],
-    foot: { w: "Итого", o: num(sum(wrows, r => r.o)), tp: shortR(totPlan), ta: shortR(totFact), exec: pct(totPlan ? 100 * totFact / totPlan : null) }
+    foot: { r: "Итого CAPEX + OPEX", tp: shortR(totPlan), ta: shortR(totFact), exec: pct(totPlan ? 100 * totFact / totPlan : null) }
   });
 };
 
@@ -3922,11 +3940,12 @@ async function boot() {
     setBoot(72, "построение модели…");
     await new Promise(r => setTimeout(r, 0));
     let ktg = null;
-    try { ktg = await fetchJSON("ktg.json", "готовность парка (КТГ)", 74, 86); } catch (e) { console.warn("КТГ не загружен:", e); }
-    try { OEMIDX = await fetchJSON("oem_idx.json", "каталожные номера", 86, 90); } catch (e) { console.warn("oem_idx:", e); }
+    try { ktg = await fetchJSON("ktg.json", "готовность парка (КТГ)", 74, 84); } catch (e) { console.warn("КТГ не загружен:", e); }
+    try { OEMIDX = await fetchJSON("oem_idx.json", "каталожные номера", 84, 87); } catch (e) { console.warn("oem_idx:", e); }
     buildOemIndex();
-    try { EKIDX = await fetchJSON("ekmtr_idx.json", "коды ЕКМТР", 90, 94); } catch (e) { console.warn("ekmtr_idx:", e); }
+    try { EKIDX = await fetchJSON("ekmtr_idx.json", "коды ЕКМТР", 87, 90); } catch (e) { console.warn("ekmtr_idx:", e); }
     buildEkIndex();
+    try { M.capex = await fetchJSON("capex.json", "CAPEX/OPEX", 90, 94); } catch (e) { console.warn("capex.json:", e); M.capex = []; }
     try { ORDIDX = await fetchJSON("order_idx.json", "указатель заказов", 94, 98); } catch (e) { console.warn("order_idx:", e); }
     setBoot(98, "связывание готовности и затрат…");
     finishBoot(cube, ktg);

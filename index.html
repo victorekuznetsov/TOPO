@@ -2358,8 +2358,18 @@ PANES.ktg = function (host) {
      </div>
      <div class="grid">${card("Единицы оборудования", "отсортированы по возрастанию фактического КТГ", "tKeo", { tools: dlBtn("tKeo") })}</div>`;
 
+  /* Считаем единицы с данными готовности отдельно: в справочнике есть
+     техника, у которой за период нет ни одного месяца КТГ, и включать
+     её в «единицы в срезе» — значит завышать базу под процентами. */
+  const rowsWithData = rows.filter(r => idx.some(i => (r.pm && r.pm[i] > 0) || (r.am && r.am[i] > 0)));
   const ktgTiles = [
-    { l: "Единиц в срезе", v: num(rows.length), s: `${num(idx.length)} месяцев периода`, tone: "accent" },
+    {
+      l: "Единиц с данными КТГ", v: num(rowsWithData.length),
+      s: rowsWithData.length < rows.length
+        ? `из ${num(rows.length)} в справочнике · ${num(idx.length)} месяцев периода`
+        : `${num(idx.length)} месяцев периода`,
+      tone: "accent"
+    },
     { l: "КТГ план", v: s.p == null ? "—" : pct(100 * s.p), s: "среднее по месяцам с данными" },
     { l: "КТГ факт", v: s.a == null ? "—" : pct(100 * s.a), s: "среднее по месяцам с данными", tone: s.a == null ? "" : s.a >= .9 ? "good" : s.a >= .8 ? "warn" : "bad" },
     { l: "Отклонение", v: s.a == null || s.p == null ? "—" : pp(100 * (s.a - s.p)), s: "факт − план", tone: s.a != null && s.p != null && s.a >= s.p ? "good" : "bad" },
@@ -2413,20 +2423,34 @@ PANES.ktg = function (host) {
     });
   }
 
+  /* «ЕО» — это единицы, у которых в выбранном периоде ЕСТЬ данные
+     готовности, а не все записи справочника. Иначе рядом с процентом,
+     посчитанным по трём машинам, стояло «13»: у остальных нет ни одного
+     месяца КТГ, и в среднее они не входят. Полный состав справочника
+     показываем тут же — «3 из 13». */
   const agg = key => {
     const m = new Map();
     rows.forEach(r => {
       const k = r[key] || "—";
-      let x = m.get(k); if (!x) m.set(k, x = { name: k, n: 0, sp: 0, np: 0, sa: 0, na: 0, fact: 0 });
-      x.n++;
+      let x = m.get(k); if (!x) m.set(k, x = { name: k, n: 0, nAll: 0, sp: 0, np: 0, sa: 0, na: 0, fact: 0 });
+      x.nAll++;
       if (r.cost) x.fact += (r.cost.a || 0) + (r.cost.uf || 0);
-      idx.forEach(i => { const pv = r.pm && r.pm[i], av = r.am && r.am[i]; if (pv > 0) { x.sp += pv; x.np++; } if (av > 0) { x.sa += av; x.na++; } });
+      let has = false;
+      idx.forEach(i => {
+        const pv = r.pm && r.pm[i], av = r.am && r.am[i];
+        if (pv > 0) { x.sp += pv; x.np++; has = true; }
+        if (av > 0) { x.sa += av; x.na++; has = true; }
+      });
+      if (has) x.n++;
     });
-    return [...m.values()].map(x => ({ name: x.name, n: x.n, p: x.np ? 100 * x.sp / x.np : null, a: x.na ? 100 * x.sa / x.na : null, d: (x.np && x.na) ? 100 * (x.sa / x.na - x.sp / x.np) : null, mo: x.na }));
+    return [...m.values()].map(x => ({ name: x.name, n: x.n, nAll: x.nAll, p: x.np ? 100 * x.sp / x.np : null, a: x.na ? 100 * x.sa / x.na : null, d: (x.np && x.na) ? 100 * (x.sa / x.na - x.sp / x.np) : null, mo: x.na }));
   };
   const kcols = t => [
     { k: "name", t, cls: "name" },
-    { k: "n", t: "ЕО", n: true, fmt: num },
+    {
+      k: "n", t: "ЕО", n: true, hint: "Единиц с данными КТГ в выбранном периоде — по ним и считается средний процент. Через «из» показан весь состав в справочнике готовности.",
+      fmt: (v, r) => r.nAll > v ? `${num(v)} <span class="dim">из ${num(r.nAll)}</span>` : num(v)
+    },
     { k: "p", t: "План", n: true, fmt: v => v == null ? "—" : pct(v) },
     { k: "a", t: "Факт", n: true, fmt: v => v == null ? "—" : `<span class="tag ${v >= 90 ? "g" : v >= 80 ? "w" : "b"}">${pct(v)}</span>` },
     { k: "d", t: "Δ", n: true, fmt: v => v == null ? "—" : deltaTag(v, " п.п.") }
@@ -2443,7 +2467,7 @@ PANES.ktg = function (host) {
       mo: na, p: np ? 100 * sp / np : null, a: na ? 100 * sa / na : null,
       d: (np && na) ? 100 * (sa / na - sp / np) : null, s: r.s
     };
-  }).filter(r => r.mo > 0);
+  }).filter(r => r.mo > 0 || r.p != null);
   tableView(host.querySelector("#tKeo"), {
     id: "tKeo", sort: "a", dir: 1, rows: eoRows, maxH: 480, onRow: r => { SEL.eo = { e: r.e, s: r.s }; setTab("eo"); },
     cols: [

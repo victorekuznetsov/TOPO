@@ -1,0 +1,413 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="description" content="Исследование вовлечения материалов ТОиР: оборачиваемость запаса, аналоги, закупка поверх остатка — заключение и рекомендации.">
+<title>Вовлечение материалов ТОиР</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Condensed:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap&subset=cyrillic,cyrillic-ext,latin">
+<style>
+img{max-width:100%}
+
+:root{
+  --ground:#F6F8F7; --surface:#FFFFFF; --sunk:#EFF3F1;
+  --ink:#0F1614; --ink-2:#44514C; --ink-3:#75837D;
+  --line:#DCE3DF; --line-2:#C3CDC8;
+  --accent:#00795A; --accent-soft:#DDF0E8;
+  --warn:#9C6200; --warn-soft:#F8ECD8;
+  --bad:#A81F38; --bad-soft:#F8E2E6;
+  --good:#00795A; --good-soft:#DDF0E8;
+  --shadow:0 1px 2px rgba(15,22,20,.05);
+  --serif:"IBM Plex Sans Condensed","Arial Narrow",system-ui,sans-serif;
+  --body:"IBM Plex Sans",system-ui,-apple-system,"Segoe UI",sans-serif;
+  --mono:"IBM Plex Mono","SFMono-Regular",Consolas,monospace;
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    --ground:#0C100F; --surface:#141A18; --sunk:#101514;
+    --ink:#E9EFEC; --ink-2:#A6B2AD; --ink-3:#78857F;
+    --line:#232B28; --line-2:#33403B;
+    --accent:#3EF0AF; --accent-soft:#0F2B22;
+    --warn:#F0B23E; --warn-soft:#2C2313;
+    --bad:#F0708F; --bad-soft:#2E161C;
+    --good:#3EF0AF; --good-soft:#0F2B22;
+    --shadow:0 1px 2px rgba(0,0,0,.4);
+  }
+}
+:root[data-theme="dark"]{
+  --ground:#0C100F; --surface:#141A18; --sunk:#101514;
+  --ink:#E9EFEC; --ink-2:#A6B2AD; --ink-3:#78857F;
+  --line:#232B28; --line-2:#33403B;
+  --accent:#3EF0AF; --accent-soft:#0F2B22;
+  --warn:#F0B23E; --warn-soft:#2C2313;
+  --bad:#F0708F; --bad-soft:#2E161C;
+  --good:#3EF0AF; --good-soft:#0F2B22;
+  --shadow:0 1px 2px rgba(0,0,0,.4);
+}
+*{box-sizing:border-box}
+body{background:var(--ground);color:var(--ink);font-family:var(--body);font-size:15px;line-height:1.62;
+  -webkit-font-smoothing:antialiased}
+.wrap{max-width:1020px;margin:0 auto;padding:40px 24px 96px}
+h1,h2,h3{font-family:var(--serif);text-wrap:balance;margin:0}
+h1{font-size:clamp(30px,4.4vw,44px);font-weight:700;letter-spacing:-.015em;line-height:1.12}
+h2{font-size:24px;font-weight:600;letter-spacing:-.005em}
+h3{font-size:17px;font-weight:600}
+p{margin:0}
+a{color:var(--accent)}
+.eyebrow{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-3)}
+.lede{font-size:18px;line-height:1.6;color:var(--ink-2);max-width:64ch}
+.num{font-family:var(--mono);font-variant-numeric:tabular-nums}
+
+/* ---- шапка ---- */
+header{display:flex;flex-direction:column;gap:18px;padding-bottom:28px;border-bottom:2px solid var(--ink)}
+.srcline{display:flex;flex-wrap:wrap;gap:6px 20px;font-family:var(--mono);font-size:11.5px;color:var(--ink-3)}
+.srcline b{color:var(--ink-2);font-weight:500}
+
+/* ---- полоса показателей ---- */
+.strip{display:grid;grid-template-columns:repeat(auto-fit,minmax(168px,1fr));gap:0;
+  border:1px solid var(--line);background:var(--surface);border-radius:2px;overflow:hidden;margin:32px 0 0}
+.cell{padding:16px 18px;border-right:1px solid var(--line);display:flex;flex-direction:column;gap:3px}
+.cell:last-child{border-right:0}
+.cell .k{font-family:var(--mono);font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-3);
+  min-height:2.6em;line-height:1.3}
+.cell .v{font-family:var(--serif);font-size:27px;font-weight:600;line-height:1.1;font-variant-numeric:tabular-nums}
+.cell .s{font-size:12px;color:var(--ink-3);line-height:1.4}
+.cell.hot .v{color:var(--bad)}
+.cell.mid .v{color:var(--warn)}
+
+section{margin-top:52px}
+.sechead{display:flex;align-items:baseline;gap:14px;margin-bottom:18px;
+  padding-bottom:9px;border-bottom:1px solid var(--line-2)}
+.sechead .eyebrow{flex:0 0 auto}
+.body-col{max-width:66ch;display:flex;flex-direction:column;gap:14px;color:var(--ink-2)}
+.body-col strong{color:var(--ink);font-weight:600}
+
+/* ---- лестница дней запаса ---- */
+.ladder{display:flex;flex-direction:column;gap:7px;margin-top:20px}
+.rung{display:grid;grid-template-columns:132px 1fr 116px;align-items:center;gap:14px}
+.rung .lab{font-size:13px;color:var(--ink-2);text-align:right}
+.rung .track{height:26px;background:var(--sunk);border-radius:2px;overflow:hidden}
+.rung .fill{height:100%;border-radius:2px}
+.rung .val{font-family:var(--mono);font-size:12.5px;font-variant-numeric:tabular-nums;color:var(--ink-2)}
+.rung .val i{font-style:normal;color:var(--ink-3)}
+.ladder-note{display:grid;grid-template-columns:132px 1fr;gap:14px;margin-top:6px}
+.ladder-note div:last-child{font-size:12.5px;color:var(--ink-3);border-top:1px dashed var(--line-2);padding-top:8px}
+
+/* ---- находки ---- */
+.finding{border-top:1px solid var(--line);padding:22px 0;display:grid;grid-template-columns:34px 1fr;gap:16px}
+.finding:last-of-type{border-bottom:1px solid var(--line)}
+.fno{font-family:var(--mono);font-size:12px;color:var(--ink-3);padding-top:4px;font-variant-numeric:tabular-nums}
+.fbody{display:flex;flex-direction:column;gap:9px}
+.ftitle{display:flex;flex-wrap:wrap;align-items:center;gap:10px}
+.chip{font-family:var(--mono);font-size:10px;letter-spacing:.08em;text-transform:uppercase;
+  padding:2px 7px;border-radius:2px;white-space:nowrap}
+.chip.crit{background:var(--bad-soft);color:var(--bad)}
+.chip.warn{background:var(--warn-soft);color:var(--warn)}
+.chip.ok{background:var(--good-soft);color:var(--good)}
+.fbody p{color:var(--ink-2);max-width:66ch}
+.facts{display:flex;flex-wrap:wrap;gap:8px 10px;margin-top:2px}
+.fact{font-family:var(--mono);font-size:12px;padding:3px 9px;background:var(--sunk);
+  border-left:2px solid var(--line-2);color:var(--ink-2);font-variant-numeric:tabular-nums}
+.fact b{color:var(--ink);font-weight:600}
+.fact.hi{border-left-color:var(--bad)}
+.fact.md{border-left-color:var(--warn)}
+.fact.go{border-left-color:var(--accent)}
+
+/* ---- таблицы ---- */
+.tscroll{overflow-x:auto;border:1px solid var(--line);border-radius:2px;background:var(--surface);margin-top:20px}
+table{border-collapse:collapse;width:100%;font-size:13.5px;min-width:560px}
+th,td{padding:9px 14px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top}
+thead th{font-family:var(--mono);font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;
+  color:var(--ink-3);font-weight:500;background:var(--sunk);white-space:nowrap}
+td.n,th.n{text-align:right;font-family:var(--mono);font-variant-numeric:tabular-nums;white-space:nowrap}
+tbody tr:last-child td{border-bottom:0}
+tfoot td{font-weight:600;background:var(--sunk);border-top:1px solid var(--line-2)}
+.tnote{font-size:12.5px;color:var(--ink-3);margin-top:9px;max-width:72ch}
+
+/* ---- вердикт ---- */
+.verdict{display:grid;grid-template-columns:1fr 1fr;gap:0;border:1px solid var(--line);
+  border-radius:2px;overflow:hidden;margin-top:20px;background:var(--surface)}
+.vcol{padding:20px 22px}
+.vcol:first-child{border-right:1px solid var(--line)}
+.vcol h3{margin-bottom:12px;display:flex;align-items:center;gap:9px}
+.vcol ul{margin:0;padding-left:18px;display:flex;flex-direction:column;gap:9px;color:var(--ink-2);font-size:14px}
+.dot{width:8px;height:8px;border-radius:50%;flex:0 0 auto}
+.dot.g{background:var(--good)} .dot.b{background:var(--bad)}
+
+/* ---- рекомендации ---- */
+.rec{border-left:3px solid var(--accent);background:var(--surface);padding:18px 20px;
+  display:flex;flex-direction:column;gap:8px;box-shadow:var(--shadow)}
+.recgrid{display:flex;flex-direction:column;gap:12px;margin-top:20px}
+.rec h3{display:flex;flex-wrap:wrap;align-items:baseline;gap:10px}
+.rec .horizon{font-family:var(--mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-3)}
+.rec p{color:var(--ink-2);font-size:14px;max-width:70ch}
+.rec .eff{font-family:var(--mono);font-size:12.5px;color:var(--accent);font-variant-numeric:tabular-nums}
+.rec.soft{border-left-color:var(--line-2)}
+.rec.soft .eff{color:var(--ink-3)}
+
+footer{margin-top:60px;padding-top:22px;border-top:1px solid var(--line);
+  font-size:12.5px;color:var(--ink-3);display:flex;flex-direction:column;gap:8px;max-width:72ch}
+code{font-family:var(--mono);font-size:.92em;background:var(--sunk);padding:1px 5px;border-radius:2px}
+@media (max-width:720px){
+  .verdict{grid-template-columns:1fr}
+  .vcol:first-child{border-right:0;border-bottom:1px solid var(--line)}
+  .rung{grid-template-columns:104px 1fr;grid-template-areas:"lab track" ". val"}
+  .rung .lab{grid-area:lab} .rung .track{grid-area:track} .rung .val{grid-area:val}
+  .ladder-note{grid-template-columns:1fr}
+}
+</style>
+</head>
+<body>
+
+<div class="wrap">
+
+<header>
+  <div class="eyebrow">Аналитическая записка · снабжение и ТОиР · сентябрь 2026</div>
+  <h1>Вовлечение материалов ТОиР</h1>
+  <p class="lede">Складские остатки, план ремонтов и открытые закупки сведены по сквозному коду ЕКМТР. Ответ на вопрос, ради которого это делалось: <strong>треть плана 2027 года уже лежит на складах</strong>, и одновременно открыты заявки на 2,80 млрд ₽ по позициям, запаса которых хватает больше чем на год.</p>
+  <div class="srcline">
+    <span><b>SAP PM-06</b> 2022–2027 · 2 620 386 строк · 4 площадки</span>
+    <span><b>BW MM-M03</b> остатки на 31.08.2026 · 192 595 строк</span>
+    <span><b>Закупка ALL</b> на 27.08.2026 · 27 352 строки</span>
+    <span><b>Аналоги КСУ</b> на 25.08.2026 · 38 757 групп</span>
+    <span><b>Справочник ЕКМТР</b> · 240 977 позиций · 414 ППЗ</span>
+  </div>
+</header>
+
+<div class="strip">
+  <div class="cell"><span class="k">Запас ТОиР</span><span class="v">28,77</span><span class="s">млрд ₽ · 56 283 позиции</span></div>
+  <div class="cell hot"><span class="k">Оборачиваемость</span><span class="v">0,79</span><span class="s">оборота в год · 463 дня хранения</span></div>
+  <div class="cell mid"><span class="k">Неподвижный запас</span><span class="v">4,58</span><span class="s">млрд ₽ · 12 255 позиций без списаний</span></div>
+  <div class="cell"><span class="k">Вовлечение в план</span><span class="v">35,4%</span><span class="s">плана 2027 · 10,24 из 28,93 млрд ₽</span></div>
+  <div class="cell hot"><span class="k">Закупка поверх запаса</span><span class="v">2,80</span><span class="s">млрд ₽ открытых заявок</span></div>
+</div>
+
+<section>
+  <div class="sechead"><span class="eyebrow">Граница</span><h2>Что считали материалом ТОиР</h2></div>
+  <div class="body-col">
+    <p>В выгрузке остатков лежит <strong>322,61 млрд ₽</strong> — но это запас всей группы, а не ремонтная номенклатура. Крупнейшая позиция там — «Руда перевезенная» на 174,53 млрд ₽, следом товарное золото и золотосодержащие продукты. Считать по ним оборачиваемость ремонтов бессмысленно.</p>
+    <p>В контур ТОиР включены позиции, по которым в PM-06 есть план или факт, за вычетом технологических расходников — дизтоплива, реагентов и лабораторной химии, взрывчатых материалов и продукции собственного производства: они планируются технологией, а не ремонтом. Дизтопливо в контуре давало бы <strong>тысячи лет запаса</strong> — 3,65 млрд ₽ остатка при 1,4 млн ₽ списаний через ремонтные заказы.</p>
+    <p>Остаётся <strong>28,77 млрд ₽</strong> по 56 283 позициям. Все цифры ниже — по этому контуру. Он воспроизводится на вкладке «Запасы и вовлечение» дашборда, там же видно, что именно отсечено.</p>
+  </div>
+</section>
+
+<section>
+  <div class="sechead"><span class="eyebrow">Находка 1</span><h2>Запас лежит 463 дня вместо 90–180</h2></div>
+  <div class="body-col">
+    <p>Расход материалов ТОиР за последние 12 месяцев — <strong>22,68 млрд ₽</strong> при запасе 28,77 млрд ₽. Это 0,79 оборота в год. Рабочий ориентир для ремонтной номенклатуры горной техники — 90–180 дней по регулярным позициям и до 1–3 лет только по страховым узлам с длинной поставкой.</p>
+  </div>
+  <div class="ladder">
+    <div class="rung"><div class="lab">менее 90 дней</div><div class="track"><div class="fill" style="width:3.3%;background:var(--bad)"></div></div><div class="val">291,1 млн <i>1,0%</i></div></div>
+    <div class="rung"><div class="lab">90–180 дней</div><div class="track"><div class="fill" style="width:12.9%;background:var(--accent)"></div></div><div class="val">1,13 млрд <i>3,9%</i></div></div>
+    <div class="rung"><div class="lab">180–365 дней</div><div class="track"><div class="fill" style="width:33.8%;background:var(--accent)"></div></div><div class="val">2,96 млрд <i>10,3%</i></div></div>
+    <div class="rung"><div class="lab">1–3 года</div><div class="track"><div class="fill" style="width:81.6%;background:var(--warn)"></div></div><div class="val">7,15 млрд <i>24,9%</i></div></div>
+    <div class="rung"><div class="lab">более 3 лет</div><div class="track"><div class="fill" style="width:96.9%;background:var(--bad)"></div></div><div class="val">8,49 млрд <i>29,5%</i></div></div>
+    <div class="rung"><div class="lab">расхода нет вовсе</div><div class="track"><div class="fill" style="width:100%;background:var(--bad)"></div></div><div class="val">8,76 млрд <i>30,4%</i></div></div>
+    <div class="ladder-note"><div></div><div>В норме — 15,2% запаса. Дольше года лежит <b>24,40 млрд ₽</b>, то есть <b>84,8%</b>. Дней запаса = 365 × остаток ÷ расход за 12 месяцев; расход взят как факт 2026 за 8 месяцев до даты снимка плюс треть факта 2025.</div></div>
+  </div>
+</section>
+
+<section>
+  <div class="sechead"><span class="eyebrow">Находки 2–8</span><h2>Где именно ломается работа с материалом</h2></div>
+
+  <div class="finding">
+    <div class="fno">02</div>
+    <div class="fbody">
+      <div class="ftitle"><h3>Планирование не вычитает остаток</h3><span class="chip crit">критично</span></div>
+      <p>Заявка на 2027 год формируется от потребности, а не от потребности за вычетом того, что уже есть. Доказательство прямое: треть плана закрывается имеющимся остатком, и при этом по 4 683 позициям открыты заявки, хотя запаса хватает больше чем на год расхода или расхода нет совсем.</p>
+      <div class="facts">
+        <span class="fact go"><b>10,24 млрд ₽</b> плана 2027 закрывается остатком</span>
+        <span class="fact go"><b>13 019</b> позиций закрыты остатком полностью</span>
+        <span class="fact hi"><b>2,80 млрд ₽</b> заявок поверх запаса</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="finding">
+    <div class="fno">03</div>
+    <div class="fbody">
+      <div class="ftitle"><h3>План — не прогноз, а отражение уже случившегося</h3><span class="chip crit">критично</span></div>
+      <p>По закрытым 2024–2025 годам плановое и фактическое количество совпали <em>до единицы</em> в 86,0% случаев. Так не выглядит прогноз на год вперёд — так выглядит резервирование под уже возникшую потребность. Практический смысл: горизонт планирования фактически нулевой, тогда как средний срок поставки — 255 дней.</p>
+      <div class="facts">
+        <span class="fact hi"><b>67 371</b> из 78 316 позиций-лет совпали точно</span>
+        <span class="fact hi"><b>28,15</b> из 39,27 млрд ₽ факта — на точных совпадениях</span>
+        <span class="fact md"><b>3 994</b> позиции-года: план был, выдачи не было (1,13 млрд ₽)</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="finding">
+    <div class="fno">04</div>
+    <div class="fbody">
+      <div class="ftitle"><h3>Статус неликвида отстаёт от реальности в восемь раз</h3><span class="chip crit">критично</span></div>
+      <p>В SAP по контуру ТОиР помечено как неликвидное (НЛИ) и невостребованное (НВИ) 0,57 млрд ₽. Фактически без единого списания за весь период данных лежит 4,58 млрд ₽, а без движения за последние 12 месяцев — ещё 8,76 млрд ₽. Пока метка не соответствует движению, ни разбраковка, ни резервирование под обесценение не работают.</p>
+      <div class="facts">
+        <span class="fact"><b>0,57 млрд ₽</b> помечено НЛИ + НВИ</span>
+        <span class="fact hi"><b>4,58 млрд ₽</b> фактически неподвижно</span>
+        <span class="fact md"><b>15,20 млрд ₽</b> — запас сверх годовой потребности (52,8%)</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="finding">
+    <div class="fno">05</div>
+    <div class="fbody">
+      <div class="ftitle"><h3>Аналоги ведутся, но не используются</h3><span class="chip warn">существенно</span></div>
+      <p>Справочник взаимозаменяемости живой: 23 558 групп задевают нашу номенклатуру, тип аналога и статус ОПИ заполнены. Но в закупке и выдаче он не участвует. В 9 248 группах параллельно расходуются две и более взаимозаменяемые позиции; в 1 423 группах запас лежит на одной позиции, а расходуется другая.</p>
+      <div class="facts">
+        <span class="fact md"><b>0,45 млрд ₽</b> «спящего» запаса во взаимозаменяемых группах</span>
+        <span class="fact go">до <b>0,26 млрд ₽/год</b> — переход на дешёвый прямой аналог</span>
+        <span class="fact"><b>1 220</b> групп с разбросом фактической цены 15–200%</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="finding">
+    <div class="fno">06</div>
+    <div class="fbody">
+      <div class="ftitle"><h3>Запас централизован, но не доведён до площадок</h3><span class="chip warn">существенно</span></div>
+      <p>58,2% запаса ТОиР — 16,74 млрд ₽ — лежит на центральном складе АО «РАЗВИТИЕ». Для хаба снабжения это нормально, ненормально другое: 5,23 млрд ₽ из этого нужны площадкам уже в плане 2027, а ещё 0,47 млрд ₽ лежат на одной площадке при потребности на другой — например, редукторы поворота экскаваторов WK в Магадане при плане по ним в Красноярске.</p>
+      <div class="facts">
+        <span class="fact md"><b>5,23 млрд ₽</b> в центре — нужны площадкам в 2027 (11 274 позиции)</span>
+        <span class="fact go"><b>0,47 млрд ₽</b> — прямое межплощадочное перераспределение (3 496 позиций)</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="finding">
+    <div class="fno">07</div>
+    <div class="fbody">
+      <div class="ftitle"><h3>Срок поставки длиннее горизонта заявки</h3><span class="chip crit">критично</span></div>
+      <p>Средневзвешенный срок от заявки до плановой поставки — <strong>255 дней</strong>; у 803 позиций он превышает год. При этом 1 838 позиций плана 2027 на 5,04 млрд ₽ имеют срок поставки больше 180 дней и нулевой остаток. Если заявку по ним размещать в году потребности, материал придёт после ремонта.</p>
+      <div class="facts">
+        <span class="fact hi"><b>1 838</b> позиций на <b>5,04 млрд ₽</b> — длинная поставка при нулевом остатке</span>
+        <span class="fact md"><b>11,44 млрд ₽</b> открытых закупок со сроком 180–365 дней</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="finding">
+    <div class="fno">08</div>
+    <div class="fbody">
+      <div class="ftitle"><h3>Нормирование отсутствует как класс</h3><span class="chip warn">существенно</span></div>
+      <p>По классификации ABC × XYZ (доля в расходе × стабильность спроса) ровно <strong>90 позиций</strong> попадают в класс AX — дорогие с ровным спросом, то есть те немногие, для которых точка заказа и страховой запас считаются формулой. На другом полюсе — почти 66 тысяч позиций класса CZ: дешёвые и эпизодические, их незачем хранить, они должны идти под заказ. Сейчас политика для обоих классов одинаковая — «заявили и купили».</p>
+      <div class="facts">
+        <span class="fact"><b>90</b> позиций AX — кандидаты на min/max и страховой запас</span>
+        <span class="fact"><b>65 967</b> позиций CZ — под заказ, не на склад</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="sechead"><span class="eyebrow">Заключение</span><h2>Корректность работы с материалами</h2></div>
+  <div class="verdict">
+    <div class="vcol">
+      <h3><span class="dot g"></span>Что поставлено правильно</h3>
+      <ul>
+        <li><strong>Единый сквозной код ЕКМТР.</strong> Он реально связывает четыре независимые системы — ремонт, склад, закупку, взаимозаменяемость. Справочник покрывает 91% денег контура, ППЗ проставлена у 88,9%.</li>
+        <li><strong>Классификатор ППЗ работает.</strong> 414 подгрупп с осмысленной иерархией; по ним видно и запас, и расход, и план — готовая ось для нормирования.</li>
+        <li><strong>Справочник аналогов существует и заполнен.</strong> 38 757 групп с типом аналога и статусом ОПИ. Это то, что обычно приходится создавать с нуля.</li>
+        <li><strong>Позиционная дисциплина заявки высокая.</strong> 99% плана и 99,7% факта закрытых лет сходятся на уровне позиции — номенклатурного хаоса нет.</li>
+      </ul>
+    </div>
+    <div class="vcol">
+      <h3><span class="dot b"></span>Что работает неправильно</h3>
+      <ul>
+        <li><strong>Плановая потребность не нетируется остатком.</strong> Главный дефект: 35,4% плана 2027 уже на складе, но план этого не знает.</li>
+        <li><strong>Планирование не опережает поставку.</strong> Горизонт заявки короче срока поставки в разы — отсюда одновременно дефицит по нужному и излишек по ненужному.</li>
+        <li><strong>Запас не разбраковывается.</strong> Метка неликвида отстаёт от фактического движения в восемь раз, поэтому мёртвые 4,58 млрд ₽ формально остаются «нормальным запасом».</li>
+        <li><strong>Взаимозаменяемость не влияет ни на закупку, ни на выдачу.</strong> Справочник ведут, но решения принимают без него.</li>
+        <li><strong>Одна политика на всю номенклатуру.</strong> Дорогая ровная позиция и разовая мелочь управляются одинаково.</li>
+      </ul>
+    </div>
+  </div>
+  <p class="tnote">Общий вывод: <strong>номенклатурный учёт корректен, управление запасом — нет.</strong> Данных достаточно, чтобы считать потребность правильно; не хватает не информации, а правила, которое связывает потребность с остатком и сроком поставки.</p>
+</section>
+
+<section>
+  <div class="sechead"><span class="eyebrow">Что делать</span><h2>Рекомендации по приоритету</h2></div>
+  <div class="recgrid">
+
+    <div class="rec">
+      <h3>1. Нетировать потребность остатком при формировании плана и заявки <span class="horizon">сейчас · до утверждения плана 2027</span></h3>
+      <p>Ввести обязательный расчёт: <em>к закупке = потребность − доступный остаток − количество в пути</em>, с проверкой по всем балансовым единицам, а не только по своей. Без этого правила любое сокращение бюджета будет резать нужное вместе с ненужным.</p>
+      <div class="eff">верхняя оценка снижения закупки 2027 — до 10,24 млрд ₽</div>
+    </div>
+
+    <div class="rec">
+      <h3>2. Ревизовать 4 683 открытые заявки поверх запаса <span class="horizon">сейчас · 2–4 недели</span></h3>
+      <p>Список готов на вкладке «Запасы и вовлечение» → «Закупка поверх запаса». Каждую позицию — отменить, отложить или подтвердить с обоснованием (страховой узел, другая площадка, иное исполнение). Начать с верхних 200 строк: на них приходится основная сумма.</p>
+      <div class="eff">2,80 млрд ₽ открытых обязательств под пересмотр</div>
+    </div>
+
+    <div class="rec">
+      <h3>3. Планировать от срока поставки, а не от года потребности <span class="horizon">квартал</span></h3>
+      <p>Для каждой позиции считать «последний срок размещения заявки» = дата потребности − срок поставки − страховой запас времени. При среднем сроке 255 дней заявки на ремонты 2027 года должны размещаться в первом квартале 2026, а по 803 позициям с поставкой дольше года — ещё раньше. Срок поставки уже есть в выгрузке закупки, его достаточно перенести в планирование.</p>
+      <div class="eff">снимает риск по 1 838 позициям на 5,04 млрд ₽ плана</div>
+    </div>
+
+    <div class="rec">
+      <h3>4. Автоматическая разбраковка вместо ручной пометки <span class="horizon">квартал</span></h3>
+      <p>Правило по данным движения, а не по решению кладовщика: без движения 12 месяцев — «под наблюдением», 24 месяца — НВИ, 36 месяцев — НЛИ с обязательным решением (перераспределить, вернуть поставщику, реализовать, списать). Сегодня разрыв между фактической неподвижностью и меткой — восьмикратный.</p>
+      <div class="eff">4,58 млрд ₽ мёртвого запаса переходит в управляемый контур</div>
+    </div>
+
+    <div class="rec">
+      <h3>5. Включить аналоги в правила выдачи и закупки <span class="horizon">квартал</span></h3>
+      <p>При заявке система должна показывать взаимозаменяемые позиции: сначала те, что уже лежат на складе, затем те, что дешевле. Прямой аналог — замена без испытаний, условный — с проверкой применимости; это в справочнике уже проставлено.</p>
+      <div class="eff">0,45 млрд ₽ «спящего» запаса + до 0,26 млрд ₽/год на цене</div>
+    </div>
+
+    <div class="rec">
+      <h3>6. Разная политика для разных классов <span class="horizon">полугодие</span></h3>
+      <p>AX и AY — нормировать: точка заказа и страховой запас считаются от разброса спроса и срока поставки. BZ и CZ — не хранить, закупать под конкретный заказ. C-номенклатура с коротким сроком — по договору с постоянным поставщиком без индивидуальной заявки. Ось для этого — ППЗ, она уже есть.</p>
+      <div class="eff">цель — вернуть оборачиваемость к 1,5–2,0 (180–240 дней)</div>
+    </div>
+
+    <div class="rec">
+      <h3>7. Довести централизованный запас до площадок и перераспределить между ними <span class="horizon">квартал</span></h3>
+      <p>5,23 млрд ₽ на центральном складе уже заявлены площадками на 2027 — под них не нужно открывать закупку, нужен график отгрузки. Отдельно 0,47 млрд ₽ лежат на площадке, которой они не нужны, при потребности на соседней.</p>
+      <div class="eff">5,70 млрд ₽ закрывается логистикой, а не деньгами</div>
+    </div>
+
+    <div class="rec soft">
+      <h3>8. Достроить исходные данные <span class="horizon">запрос в BW</span></h3>
+      <p>Три поля закрывают оставшиеся слепые зоны. <strong>Базисная единица измерения</strong> в PM-06 — без неё сравнение цен между аналогами ненадёжно: в данных нашлись пары с ценой 13,5 млн ₽ против 1 ₽, и это расхождение единиц, а не экономия. <strong>Обороты за период</strong> в MM-M03 (показатели «Отгружено со склада» и «Получено на склад» в отчёте есть, но в выгрузку не включены) — тогда оборачиваемость будет считаться напрямую, а не через списания PM-06. <strong>Дата последнего движения</strong> — для настоящего возрастного анализа запаса вместо приближения по годам.</p>
+      <div class="eff">точность показателей, а не прямой эффект</div>
+    </div>
+
+  </div>
+</section>
+
+<section>
+  <div class="sechead"><span class="eyebrow">Сводка</span><h2>Потенциал в деньгах</h2></div>
+  <div class="tscroll">
+    <table>
+      <thead><tr><th>Направление</th><th class="n">Сумма, млрд ₽</th><th class="n">Позиций</th><th>Характер эффекта</th></tr></thead>
+      <tbody>
+        <tr><td>Вовлечь остаток в план 2027 вместо закупки</td><td class="n">10,24</td><td class="n">20 646</td><td>Сокращение закупки будущего года</td></tr>
+        <tr><td>Довести централизованный запас до площадок</td><td class="n">5,23</td><td class="n">11 274</td><td>Логистика, деньги уже потрачены</td></tr>
+        <tr><td>Отменить или отложить закупку поверх запаса</td><td class="n">2,80</td><td class="n">4 683</td><td>Открытые обязательства</td></tr>
+        <tr><td>Разбраковать неподвижный запас</td><td class="n">4,58</td><td class="n">12 255</td><td>Возврат, реализация, списание</td></tr>
+        <tr><td>Перераспределить между площадками</td><td class="n">0,47</td><td class="n">3 496</td><td>Логистика</td></tr>
+        <tr><td>Перейти на дешёвый прямой аналог</td><td class="n">0,26</td><td class="n">1 220 групп</td><td>Ежегодная экономия на цене</td></tr>
+        <tr><td>Вовлечь «спящий» запас во взаимозаменяемых группах</td><td class="n">0,45</td><td class="n">1 423 группы</td><td>Замена закупки выдачей</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="tnote">Суммы — верхние оценки по данным, а не подтверждённый эффект: они частично пересекаются (позиция может попасть и в «вовлечь в план», и в «закупка поверх запаса»), и каждая требует подтверждения применимости, состояния и комплектности на месте. Складывать их нельзя; работать с ними нужно сверху вниз.</p>
+</section>
+
+<footer>
+  <p>Расчёты воспроизводятся в дашборде ТОиР: вкладка <strong>«Запасы и вовлечение»</strong> — оборачиваемость, неподвижный запас, вовлечение и шесть рабочих списков позиций; вкладка <strong>«Материалы / ППЗ»</strong> — история потребности, ценовой фактор и аналоги по каждой позиции.</p>
+  <p>Методика: дни запаса = 365 × остаток ÷ расход за 12 месяцев; расход за 12 месяцев = факт 2026 (8 месяцев до даты снимка остатков) + треть факта 2025. Вовлечение считается по количеству и переводится в деньги по плановой цене позиции. Отклонение цены раскладывается как Δ = (цена факт − цена план) × количество факт + (количество факт − количество план) × цена план.</p>
+  <p>Ограничения: остатки — снимок на одну дату, а не оборот за период; единица измерения в PM-06 отсутствует; сроки поставки взяты по открытым закупкам и распространены на позицию.</p>
+</footer>
+
+</div>
+
+</body>
+</html>

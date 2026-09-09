@@ -421,9 +421,9 @@ body.ready #boot{display:none}
       <label class="switch"><input type="checkbox" id="optMerge" checked><span>Склеивать написания контрагентов</span></label>
       <p class="fnote" id="noteMerge">Наименования в выгрузке усечены, один контрагент попадает в отчёт под несколькими написаниями.</p>
       <label class="switch"><input type="checkbox" id="optComparable"><span>Только сопоставимые годы</span></label>
-      <p class="fnote">Исключает годы, где часть площадок отсутствует в выгрузке (2022, 2023), чтобы динамика не ломалась о состав контура.</p>
+      <p class="fnote" id="noteComparable">Исключает годы, где часть площадок отсутствует в выгрузке, чтобы динамика не ломалась о состав контура.</p>
       <label class="switch"><input type="checkbox" id="optClosed"><span>Только закрытые периоды</span></label>
-      <p class="fnote">Оставляет годы с фактом (2022–2026). 2027 — чистый план, факт нулевой.</p>
+      <p class="fnote" id="noteClosed">Оставляет годы, по которым есть факт.</p>
       <label class="switch"><input type="checkbox" id="optExclUnassigned"><span>Исключить неопознанное оборудование</span></label>
       <p class="fnote" id="noteExcl">Убирает из сумм заказы без единицы оборудования — переключает базу на витрину ЕО, месяц и способ пропадают из графиков.</p>
     </div>
@@ -442,8 +442,9 @@ body.ready #boot{display:none}
     <button data-t="eo" role="tab">Оборудование</button>
     <button data-t="vmz" role="tab">Внутренние ВМЗ</button>
     <button data-t="ord" role="tab">Заказы</button>
-    <button data-t="cmp" role="tab">План 2026 → 2027</button>
+    <button data-t="cmp" role="tab">Сравнение планов</button>
     <button data-t="dq" role="tab">Качество данных</button>
+    <button data-t="upd" role="tab">Обновление данных</button>
   </nav>
 
   <div id="ctxbar" class="ctxbar"></div>
@@ -1051,7 +1052,9 @@ function buildVendorMap(names, weight, cap) {
 }
 const vendor = n => (OPT.merge && M.vendorMap.get(n)) || n;
 
+let CUBE_RAW = null;
 function buildModel(cube) {
+  CUBE_RAW = cube;          // нужен вкладке «Обновление данных» для пересборки
   M.sites = cube.sites || {};
   M.combo = cube.combo || [];
   M.eoList = cube.eoList || [];
@@ -1086,6 +1089,20 @@ function buildModel(cube) {
   });
   M.comparableYears = M.years.filter(y => M.yearInfo[y].full);
   M.closedYears = M.years.filter(y => M.yearInfo[y].status !== "план");
+  /* Подпись вкладки сравнения — из самих данных: при загрузке выгрузок
+     за новые годы она сдвигается сама, а не остаётся «2026 → 2027». */
+  const cmpBtn = document.querySelector('#tabs button[data-t="cmp"]');
+  if (cmpBtn && M.years.length >= 2) cmpBtn.textContent = `План ${M.years[M.years.length - 2]} → ${M.years[M.years.length - 1]}`;
+  // Пояснения к переключателям тоже перечисляют конкретные годы — иначе
+  // после загрузки новых выгрузок они начнут врать.
+  const partial = M.years.filter(y => !M.yearInfo[y].full);
+  const nc = document.getElementById("noteComparable");
+  if (nc) nc.textContent = "Исключает годы, где часть площадок отсутствует в выгрузке"
+    + (partial.length ? ` (${partial.join(", ")})` : "") + ", чтобы динамика не ломалась о состав контура.";
+  const planOnly = M.years.filter(y => M.yearInfo[y].status === "план");
+  const ncl = document.getElementById("noteClosed");
+  if (ncl) ncl.textContent = `Оставляет годы с фактом${M.closedYears.length ? " (" + M.closedYears.join(", ") + ")" : ""}.`
+    + (planOnly.length ? ` ${planOnly.join(", ")} — чистый план, факт нулевой.` : "");
 
   /* --- затраты по ЕО (ключ = усечённое имя, как в исходной выгрузке) --- */
   M.eoCost = new Map();
@@ -3490,6 +3507,238 @@ function renderCtx() {
   else if (SEL.order) box.innerHTML = `<span>Открыт заказ:</span> <b>${esc(SEL.order)}</b><span class="x" data-ctxclear="order" title="Закрыть"><svg><use href="#i-x"/></svg></span>`;
   else box.innerHTML = "";
 }
+/* ---------- Обновление данных из новых выгрузок PM-06 ---------- */
+/* Пересобирает витрину прямо в браузере: сервер и Python не нужны,
+   выгрузка читается потоком (lib/xlsx_stream.js), поля извлекаются
+   проверенной логикой (lib/pm06_pipeline.js). Обновляются только те
+   площадко-годы, файлы которых выбраны, — остальные не трогаются. */
+const UPD = { files: [], results: [], merged: null, busy: false, msg: "", err: "", progress: null };
+let UPD_LIBS = null;
+
+function updLoadLibs() {
+  if (UPD_LIBS) return UPD_LIBS;
+  const one = src => new Promise((res, rej) => {
+    const s = document.createElement("script");
+    s.src = src;
+    s.onload = res;
+    s.onerror = () => rej(new Error("Не удалось загрузить " + src + " — папка lib должна лежать рядом с index.html"));
+    document.head.appendChild(s);
+  });
+  UPD_LIBS = Promise.all([one("lib/xlsx_stream.js"), one("lib/pm06_pipeline.js"), one("lib/zip_write.js")])
+    .catch(e => { UPD_LIBS = null; throw e; });
+  return UPD_LIBS;
+}
+
+/* Площадку и год берём из имени файла (M06_1100_2026.xlsx) — так их
+   называет выгрузка BW. Если имя другое, пользователь укажет вручную. */
+function updParseName(name) {
+  const m = /(\d{4})[_-](\d{4})/.exec(name.replace(/\.xlsx$/i, ""));
+  return m ? { site: m[1], year: m[2] } : { site: "", year: "" };
+}
+
+function updSlice(rows, s, y) {
+  let p = 0, a = 0, up = 0, uf = 0, n = 0;
+  for (const r of rows) if (r.s === s && r.y === y) { p += r.p || 0; a += r.a || 0; up += r.up || 0; uf += r.uf || 0; n += r.n || 0; }
+  return { p, a, up, uf, n };
+}
+
+async function updRun() {
+  if (UPD.busy || !UPD.files.length) return;
+  UPD.busy = true; UPD.err = ""; UPD.results = []; UPD.merged = null;
+  renderTab();
+  try {
+    await updLoadLibs();
+    for (let i = 0; i < UPD.files.length; i++) {
+      const f = UPD.files[i];
+      if (!f.site || !f.year) throw new Error(`Для файла «${f.file.name}» не определены площадка и год — укажите их вручную`);
+      UPD.progress = { i, total: UPD.files.length, name: f.file.name, pct: 0, rows: 0 };
+      renderTab();
+      const zip = await XLSXStream.openZip(f.file);
+      const proc = PM06.createProcessor(f.site, f.year);
+      await XLSXStream.streamSheet(zip, "PM-06", cells => proc.pushRow(cells), pr => {
+        UPD.progress = { i, total: UPD.files.length, name: f.file.name, pct: Math.round(100 * pr.done / (pr.total || 1)), rows: pr.rows };
+        const el = document.getElementById("updBar");
+        if (el) el.style.width = UPD.progress.pct + "%";
+        const t = document.getElementById("updBarTxt");
+        if (t) t.textContent = `${f.file.name} — ${UPD.progress.pct}%, ${num(pr.rows)} строк`;
+      });
+      UPD.results.push(proc.finish());
+    }
+    UPD.progress = null;
+    UPD.merged = PM06.mergeIntoCube(CUBE_RAW, M.capex || [], UPD.results);
+    UPD.merged.ordidx = PM06.mergeOrderIndex(ORDIDX, UPD.results);
+    const oem = PM06.mergeOemIndex(OEMIDX, UPD.results);
+    UPD.merged.oemidx = oem.idx;
+    UPD.msg = `Готово: пересобрано ${UPD.results.length} выгрузок.` +
+      (oem.added ? ` В каталог каталожных номеров добавлено ${num(oem.added)} позиций.` : "") +
+      ` Проверьте изменения ниже, затем примените или скачайте файлы.`;
+  } catch (e) {
+    UPD.err = String(e && e.message || e);
+    UPD.progress = null;
+  }
+  UPD.busy = false;
+  renderTab();
+}
+
+function updApply() {
+  if (!UPD.merged) return;
+  CUBE_RAW = UPD.merged.cube;
+  buildModel(CUBE_RAW);
+  M.capex = UPD.merged.capex;
+  M.cube_files = (CUBE_RAW.files || []).length;
+  if (UPD.merged.ordidx) { ORDIDX = UPD.merged.ordidx; ORDIDX_MAP = null; }
+  if (UPD.merged.oemidx) { OEMIDX = UPD.merged.oemidx; buildOemIndex(); }
+  /* Полная детализация обновлённых площадко-лет уже разобрана — кладём
+     её в кэш сразу, чтобы вкладки «Заказы» и «Оборудование» показывали
+     новые данные, а не подтягивали старый файл с диска. */
+  UPD.results.forEach(r => {
+    const key = r.meta.site + "_" + r.meta.year;
+    D.dets.set(key, { key, s: r.meta.site, y: r.meta.year, data: r.detail, err: null, loading: false });
+  });
+  UPD.msg = "Новые данные применены к текущему сеансу. Чтобы они остались после перезагрузки — скачайте файлы и распакуйте их в папку отчёта.";
+  refresh();
+}
+
+async function updDownload() {
+  if (!UPD.merged || UPD.busy) return;
+  UPD.busy = true; UPD.err = ""; renderTab();
+  try {
+    const files = [];
+    const add = (name, key, obj) => {
+      const text = JSON.stringify(obj);
+      files.push({ name, text });
+      files.push({ name: name.replace(/\.json$/, ".local.js"), text: `__LOCAL_ASSET(${JSON.stringify(key)},${text});` });
+    };
+    add("cube.json", "cube", UPD.merged.cube);
+    add("capex.json", "capex", UPD.merged.capex);
+    if (UPD.merged.ordidx) add("order_idx.json", "ordidx", UPD.merged.ordidx);
+    if (UPD.merged.oemidx) add("oem_idx.json", "oem", UPD.merged.oemidx);
+    UPD.results.forEach(r => {
+      const key = r.meta.site + "_" + r.meta.year;
+      add(`data/${key}.json`, "det_" + key, r.detail);
+    });
+    const blob = await ZipWrite.build(files, (name, i, total) => {
+      const t = document.getElementById("updBarTxt");
+      if (t) t.textContent = `Упаковка ${i + 1} из ${total}: ${name}`;
+      const el = document.getElementById("updBar");
+      if (el) el.style.width = Math.round(100 * i / total) + "%";
+      return new Promise(r2 => setTimeout(r2, 0));
+    });
+    const stamp = new Date().toISOString().slice(0, 10);
+    ZipWrite.download(blob, `topo-data-${stamp}.zip`);
+    UPD.msg = `Архив собран (${(blob.size / 1e6).toFixed(1)} МБ). Распакуйте его в папку отчёта с заменой файлов.`;
+  } catch (e) {
+    UPD.err = String(e && e.message || e);
+  }
+  UPD.busy = false;
+  renderTab();
+}
+
+PANES.upd = function (host) {
+  const files = UPD.files;
+  let head = callout("info",
+    `Пересборка данных из новых выгрузок SAP PM-06 — прямо здесь, без сервера и без установки чего-либо. ` +
+    `Выберите файлы <b>M06_{площадка}_{год}.xlsx</b> (тот же формат, что и сейчас), они будут разобраны в браузере, ` +
+    `и обновятся <b>только выбранные площадко-годы</b> — остальные останутся как есть. ` +
+    `Размер файла значения не имеет: лист читается потоком.`);
+  if (UPD.err) head += callout("bad", esc(UPD.err));
+  else if (UPD.msg) head += callout(UPD.merged ? "info" : "info", esc(UPD.msg));
+
+  const rowsHtml = files.map((f, i) => `<tr>
+      <td class="name">${esc(f.file.name)}</td>
+      <td class="n">${(f.file.size / 1e6).toFixed(1)} МБ</td>
+      <td><input class="updIn" data-i="${i}" data-k="site" value="${esc(f.site)}" size="6"></td>
+      <td><input class="updIn" data-i="${i}" data-k="year" value="${esc(f.year)}" size="6"></td>
+      <td class="dim">${f.site && f.year ? (M.sites[f.site] ? esc(M.sites[f.site]) : "новая площадка") : "укажите площадку и год"}</td>
+    </tr>`).join("");
+
+  host.innerHTML = head +
+    `<div class="grid">
+       ${card("Выгрузки для пересборки", files.length ? `${files.length} файлов` : "файлы не выбраны", "updFiles", {
+      tools: `<button class="minibtn" type="button" id="updPick">Выбрать файлы…</button>` +
+        (files.length ? ` <button class="minibtn" type="button" id="updClear">Очистить</button>` : "") +
+        (files.length ? ` <button class="minibtn" type="button" id="updGo"${UPD.busy ? " disabled" : ""}>${UPD.busy ? "Обработка…" : "Пересобрать"}</button>` : "")
+    })}
+     </div>
+     <input type="file" id="updInput" accept=".xlsx" multiple hidden>`;
+
+  const cardBody = host.querySelector("#updFiles");
+  cardBody.innerHTML = files.length
+    ? `<div class="tw"><table><thead><tr><th>Файл</th><th class="n">Размер</th><th>Площадка</th><th>Год</th><th>Проверка</th></tr></thead><tbody>${rowsHtml}</tbody></table></div>`
+    : `<div class="empty">Нажмите «Выбрать файлы…» и укажите выгрузки PM-06. Площадка и год определяются по имени файла.</div>`;
+
+  if (UPD.busy || UPD.progress) {
+    cardBody.insertAdjacentHTML("beforeend",
+      `<div style="margin-top:12px">
+         <div style="height:8px;background:var(--line);border-radius:4px;overflow:hidden">
+           <div id="updBar" style="height:100%;width:${UPD.progress ? UPD.progress.pct : 0}%;background:var(--accent);transition:width .2s"></div>
+         </div>
+         <div class="dim" id="updBarTxt" style="margin-top:6px;font-size:12px">${UPD.progress ? esc(UPD.progress.name) + " — " + UPD.progress.pct + "%" : "Подготовка…"}</div>
+       </div>`);
+  }
+
+  if (UPD.merged) {
+    const diff = UPD.results.map(r => {
+      const s = r.meta.site, y = r.meta.year;
+      const was = updSlice(M.combo, s, y);
+      const now = updSlice(r.combo, s, y);
+      return {
+        k: (M.sites[s] || s) + " · " + y,
+        rows: r.meta.rows, orders: r.meta.orders,
+        wasP: was.p + was.up, nowP: now.p + now.up,
+        wasA: was.a + was.uf, nowA: now.a + now.uf,
+        dP: (now.p + now.up) - (was.p + was.up), dA: (now.a + now.uf) - (was.a + was.uf),
+        det: r.detail.n
+      };
+    });
+    host.insertAdjacentHTML("beforeend",
+      `<div class="grid">${card("Что изменится", "сравнение с данными, загруженными сейчас", "updDiff", {
+        tools: `<button class="minibtn" type="button" id="updApply"${UPD.busy ? " disabled" : ""}>Применить в этом сеансе</button>` +
+          ` <button class="minibtn" type="button" id="updZip"${UPD.busy ? " disabled" : ""}>Скачать обновлённые файлы (ZIP)</button>`
+      })}</div>`);
+    tableView(host.querySelector("#updDiff"), {
+      id: "updDiff", rows: diff, sort: "nowP", maxH: 420,
+      cols: [
+        { k: "k", t: "Площадка · год", cls: "name" },
+        { k: "rows", t: "Строк в выгрузке", n: true, fmt: num },
+        { k: "det", t: "Строк с затратами", n: true, fmt: num },
+        { k: "orders", t: "Заказов", n: true, fmt: num },
+        { k: "wasP", t: "План было", n: true, fmt: shortR },
+        { k: "nowP", t: "План стало", n: true, fmt: shortR },
+        { k: "dP", t: "Δ плана", n: true, fmt: v => (v > 0 ? "+" : "") + shortR(v) },
+        { k: "wasA", t: "Факт было", n: true, fmt: shortR },
+        { k: "nowA", t: "Факт стало", n: true, fmt: shortR },
+        { k: "dA", t: "Δ факта", n: true, fmt: v => (v > 0 ? "+" : "") + shortR(v) }
+      ]
+    });
+    host.insertAdjacentHTML("beforeend", callout("warn",
+      `«Применить в этом сеансе» меняет цифры только до перезакрытия страницы. Чтобы обновление осталось насовсем — скачайте архив и распакуйте его в папку отчёта с заменой (<code>cube.json</code>, <code>capex.json</code>, <code>data/…</code> и их пары <code>.local.js</code> для работы с диска). Для опубликованной версии эти же файлы нужно закоммитить в репозиторий.`));
+  }
+
+  const inp = host.querySelector("#updInput");
+  const pick = host.querySelector("#updPick");
+  if (pick) pick.onclick = () => inp.click();
+  inp.onchange = () => {
+    UPD.files = [...inp.files].map(file => {
+      const g = updParseName(file.name);
+      return { file, site: g.site, year: g.year };
+    });
+    UPD.msg = ""; UPD.err = ""; UPD.merged = null; UPD.results = [];
+    renderTab();
+  };
+  const clr = host.querySelector("#updClear");
+  if (clr) clr.onclick = () => { UPD.files = []; UPD.merged = null; UPD.results = []; UPD.msg = ""; UPD.err = ""; renderTab(); };
+  const go = host.querySelector("#updGo");
+  if (go) go.onclick = updRun;
+  const ap = host.querySelector("#updApply");
+  if (ap) ap.onclick = updApply;
+  const zp = host.querySelector("#updZip");
+  if (zp) zp.onclick = updDownload;
+  host.querySelectorAll(".updIn").forEach(el => {
+    el.onchange = () => { UPD.files[+el.dataset.i][el.dataset.k] = el.value.trim(); renderTab(); };
+  });
+};
+
 function setTab(t) {
   if (!PANES[t]) t = "sum";
   TAB = t;

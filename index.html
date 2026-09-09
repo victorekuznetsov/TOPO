@@ -439,6 +439,7 @@ body.ready #boot{display:none}
     <button data-t="ktg" role="tab">КТГ</button>
     <button data-t="uso" role="tab">Контрагенты УСО</button>
     <button data-t="mtr" role="tab">МТР / ЕКМТР</button>
+    <button data-t="mat" role="tab">Материалы / ППЗ</button>
     <button data-t="eo" role="tab">Оборудование</button>
     <button data-t="vmz" role="tab">Внутренние ВМЗ</button>
     <button data-t="ord" role="tab">Заказы</button>
@@ -2625,7 +2626,7 @@ PANES.mtr = function (host) {
       : callout("info", `Витрина позиций МТР охватывает <b>${shortR(totP)}</b> плана — это ${pct(slicesP ? 100 * totP / slicesP : 0)} плана МТР по площадкам и годам среза. Остальное приходится на позиции вне ${num(M.mat.length)} сохранённых срезов. Суммы ниже — по покрытой части, а не по всему плану.`)) +
     (F.contractors.size ? callout("warn", `Фильтр «Подрядчик» на эту вкладку не действует — ни позиции МТР, ни компоненты ЕКМТР по единицам оборудования не хранят исполнителя. Подрядчик есть в заказах (вкладка «Заказы») и в контрагентах УСО.`) : "") +
     `<div class="quickfind" style="margin-bottom:12px">
-      <label>ЕКМТР<input type="search" id="qMtr" placeholder="наименование компонента" value="${esc(QMTR)}"></label>
+      <label>ЕКМТР<input type="search" id="qMtr" placeholder="наименование или № ЕКМТР" value="${esc(QMTR)}"></label>
       <label>Каталожный №<input type="search" id="qCat" placeholder="номер детали производителя" value="${esc(QCAT)}"></label>
      </div>
      <div class="grid">${card("ABC-разложение позиций МТР", "20 крупнейших позиций по плану", "cAbc", { foot: "Группа A — позиции, дающие первые 80% плана; B — до 95%; C — длинный хвост. Планирование запаса и переговоры о цене имеют смысл прежде всего в группе A." })}</div>
@@ -2704,6 +2705,444 @@ PANES.mtr = function (host) {
 };
 
 /* ---------- Оборудование ---------- */
+/* ---------- Материалы: потребность, цена, аналоги ---------- */
+/* Витрина mtr.json собрана из тех же 21 выгрузок PM-06 и справочников
+   папки ЕКМТР (справочник ЕКМТР, остатки MM-M03, закупка). В ней:
+     — словарь материалов: код ЕКМТР, наименование, каталожный номер,
+       подгруппа плана закупа (ППЗ), изготовитель;
+     — использование: (материал × площадка × год × CAPEX/OPEX) → план и
+       факт количества и стоимости, число строк, заказов, единиц техники;
+     — группы аналогов: ведущая деталь и её заменители с типом аналога.
+   Файл ~17 МБ, поэтому грузится не при старте, а при первом открытии
+   вкладки — как и полная детализация заказов. */
+const MTRU = { data: null, state: "idle", err: "", ix: null, start: null, anc: null, ang: null };
+let QMAT = "";            // поиск по коду / наименованию / каталожному №
+let SELMAT = null;        // раскрытый материал (индекс в словаре)
+let SELPPZ = null;        // выбранная подгруппа плана закупа
+
+/* Разбор загруженной витрины: разворачиваем дельты, строим указатели.
+   Вынесено отдельно, потому что тем же путём принимается витрина,
+   пересобранная на вкладке «Обновление данных». */
+function mtrPrepare(d) {
+  {
+    /* индекс материала в строках хранится дельтой — разворачиваем */
+    const k = d.k; let acc = 0;
+    for (let i = 0; i < k.length; i++) { acc += k[i]; k[i] = acc; }
+    MTRU.ix = new Map(d.ek.map((c, i) => [c, i]));
+    /* строки отсортированы по материалу — запоминаем, где начинается
+       каждый, чтобы разбор одной позиции не сканировал все 261 тыс. */
+    const start = new Int32Array(d.ek.length + 1).fill(-1);
+    for (let i = k.length - 1; i >= 0; i--) start[k[i]] = i;
+    start[d.ek.length] = k.length;
+    for (let i = d.ek.length - 1; i >= 0; i--) if (start[i] < 0) start[i] = start[i + 1];
+    /* обратный указатель «материал → группы аналогов, где он есть» */
+    const ang = new Map(), anc = new Int32Array(d.ek.length);
+    d.an.ms.forEach((ms, g) => {
+      const all = [d.an.l[g], ...ms];
+      all.forEach(e => {
+        if (e == null) return;
+        let a = ang.get(e); if (!a) ang.set(e, a = []);
+        a.push(g);
+      });
+    });
+    ang.forEach((gs, e) => {
+      const s = new Set();
+      gs.forEach(g => { if (d.an.l[g] != null && d.an.l[g] !== e) s.add(d.an.l[g]); d.an.ms[g].forEach(m => { if (m !== e) s.add(m); }); });
+      anc[e] = s.size;
+    });
+    MTRU.data = d; MTRU.start = start; MTRU.ang = ang; MTRU.anc = anc; MTRU.state = "ready";
+  }
+  return d;
+}
+let MTRU_P = null;
+function mtrEnsure() {
+  if (MTRU_P) return MTRU_P;
+  MTRU.state = "loading"; MTRU.err = "";
+  const raw = IS_FILE_PROTO
+    ? loadLocalScript("mtru", "mtr.local.js")
+    : fetch("mtr.json").then(r => { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); });
+  MTRU_P = raw.then(mtrPrepare);
+  MTRU_P.catch(e => { MTRU_P = null; MTRU.state = "err"; MTRU.err = String(e && e.message || e); });
+  return MTRU_P;
+}
+function mtrLoad() {
+  if (MTRU.state === "ready") return;
+  mtrEnsure().then(() => { if (TAB === "mat") renderTab(); }, () => { if (TAB === "mat") renderTab(); });
+}
+/* Приём витрины, пересобранной из новых выгрузок: k в ней снова
+   дельта-кодирован, поэтому проходим тот же разбор, что и при загрузке. */
+function mtrAdopt(obj) {
+  MTRU_P = Promise.resolve(mtrPrepare(obj));
+}
+
+/* Ячейка витрины: cell = ((площадка × число лет) + год) × 4 + признак
+   CAPEX (0 — OPEX, 1 — CAPEX, 2 — причина инвестиций не присвоена). */
+const MTR_CX = ["OPEX", "CAPEX", ""];
+
+/* Проход по витрине: оставляем ячейки текущего среза (площадка, год,
+   CAPEX/OPEX) и складываем по материалу и по году. Технику и подрядчика
+   витрина не различает — для них ниже есть путь через детализацию. */
+function mtrAggCube() {
+  const d = MTRU.data, NY = d.years.length, NE = d.ek.length;
+  const P = new Float64Array(NE), A = new Float64Array(NE), QP = new Float64Array(NE), QF = new Float64Array(NE);
+  const N = new Int32Array(NE), O = new Int32Array(NE), E = new Int32Array(NE);
+  const yP = new Float64Array(NY), yA = new Float64Array(NY), yQP = new Float64Array(NY), yQF = new Float64Array(NY);
+  const okSite = d.sites.map(s => !F.sites.size || F.sites.has(s));
+  const okYear = d.years.map(y => YS.has(String(y)));
+  const okCx = MTR_CX.map(b => !F.capex.size || (b !== "" && F.capex.has(b)));
+  let rows = 0;
+  for (let i = 0; i < d.k.length; i++) {
+    const c = d.c[i], cx = c & 3, t = c >> 2, yi = t % NY, si = (t / NY) | 0;
+    if (!okSite[si] || !okYear[yi] || !okCx[cx]) continue;
+    const e = d.k[i];
+    P[e] += d.p[i]; A[e] += d.a[i]; QP[e] += d.qp[i]; QF[e] += d.qf[i];
+    N[e] += d.n[i]; O[e] += d.o[i]; E[e] += d.e[i];
+    yP[yi] += d.p[i]; yA[yi] += d.a[i]; yQP[yi] += d.qp[i]; yQF[yi] += d.qf[i];
+    rows++;
+  }
+  return { P, A, QP, QF, N, O, E, yP, yA, yQP, yQF, rows, src: "cube" };
+}
+
+/* То же, но из полной детализации: там у каждой строки есть единица
+   оборудования, подрядчик, метод и вид работ, поэтому действуют ВСЕ
+   фильтры слева — ровно те же условия, что на вкладке «Заказы». */
+function mtrAggDetail(done) {
+  const d0 = MTRU.data, NY = d0.years.length, NE = d0.ek.length, IX = MTRU.ix;
+  const P = new Float64Array(NE), A = new Float64Array(NE), QP = new Float64Array(NE), QF = new Float64Array(NE);
+  const N = new Int32Array(NE), O = new Int32Array(NE), E = new Int32Array(NE);
+  const yP = new Float64Array(NY), yA = new Float64Array(NY), yQP = new Float64Array(NY), yQF = new Float64Array(NY);
+  const keys = allowedEoKeys();
+  let rows = 0, unknown = 0;
+  const seenO = new Set(), seenE = new Set();
+  done.forEach(entry => {
+    const d = entry.data;
+    const yi = d0.years.indexOf(String(d.y));
+    for (let i = 0; i < d.n; i++) {
+      const u = d.u[i], w2 = d.w[d.wi[i]], e = d.e[d.ei[i]];
+      if (F.methods.size && !F.methods.has(u) && !(F.methods.has("Хозспособ") && u === "ХС") && !(F.methods.has("Комбинированный") && u === "Комб")) continue;
+      if (F.works.size && !F.works.has(w2)) continue;
+      if (keys && !keys.has(eoKey(e))) continue;
+      if (F.fleets.size) { const fl = M.eoFleet.get(eoKey(e)); if (fl && !F.fleets.has(fl)) continue; }
+      if (F.contractors.size) { const wc = (d.wc && d.wci) ? vendor(d.wc[d.wci[i]]) : ""; if (!F.contractors.has(wc)) continue; }
+      if (F.capex.size) { const b = capexBucket(d.orr && d.orr[d.o[i]]); if (!b || !F.capex.has(b)) continue; }
+      const ek = IX.get(d.cek[d.ci[i]]);
+      if (ek === undefined) { unknown++; continue; }
+      const p = d.p[i] || 0, a = d.a[i] || 0, qp = d.qp[i] || 0, qf = d.qf[i] || 0;
+      P[ek] += p; A[ek] += a; QP[ek] += qp; QF[ek] += qf; N[ek]++;
+      const ko = ek + " " + d.o[i]; if (!seenO.has(ko)) { seenO.add(ko); O[ek]++; }
+      const ke = ek + " " + entry.key + " " + d.ei[i]; if (!seenE.has(ke)) { seenE.add(ke); E[ek]++; }
+      if (yi >= 0) { yP[yi] += p; yA[yi] += a; yQP[yi] += qp; yQF[yi] += qf; }
+      rows++;
+    }
+  });
+  return { P, A, QP, QF, N, O, E, yP, yA, yQP, yQF, rows, unknown, src: "detail" };
+}
+
+/* Разложение отклонения факта от плана на эффект цены и эффект объёма:
+   Δ = факт − план = (цф − цп)·кф + (кф − кп)·цп, где цп = план/кол-во
+   плана, цф = факт/кол-во факта. Тождество точное, поэтому сумма двух
+   эффектов равна отклонению и по одной позиции, и по их сумме. */
+function mtrFactors(p, a, qp, qf) {
+  if (!(qp > 0) || !(qf > 0) || !(p > 0)) return { up: qp > 0 ? p / qp : null, uf: qf > 0 ? a / qf : null, price: null, vol: null, dev: a - p };
+  const up = p / qp, uf = a / qf;
+  return { up, uf, price: (uf - up) * qf, vol: (qf - qp) * up, dev: a - p };
+}
+
+PANES.mat = function (host) {
+  if (MTRU.state === "idle") mtrLoad();
+  if (MTRU.state !== "ready") {
+    host.innerHTML = MTRU.state === "err"
+      ? callout("bad", `Не удалось загрузить витрину материалов (${esc(MTRU.err)}). При открытии страницы с диска браузер блокирует fetch — рядом с index.html должен лежать файл <code>mtr.local.js</code>. <button type="button" class="minibtn" id="btnMtrRetry">Повторить</button>`)
+      : callout("info", `Загружается витрина материалов (~17 МБ, при публикации отдаётся сжатой примерно до 6 МБ). Она не грузится при старте, чтобы не задерживать открытие дашборда: в ней 261 тыс. строк «материал × площадка × год × CAPEX», справочник на 133 тыс. позиций ЕКМТР и 23,6 тыс. групп аналогов.`);
+    const b = host.querySelector("#btnMtrRetry");
+    if (b) b.onclick = () => { MTRU.state = "idle"; renderTab(); };
+    return;
+  }
+  const d = MTRU.data;
+
+  /* Источник: если под текущий фильтр загружена полная детализация —
+     считаем по ней (действуют все фильтры, включая технику и
+     подрядчика); иначе по витрине (площадка, год, CAPEX/OPEX). */
+  const w = wantedDetail();
+  const done = loadedDetails(w.combos).filter(e => e.data);
+  const narrow = F.fleets.size || F.works.size || F.methods.size || F.contractors.size ||
+    F.kcls.size || F.makers.size || F.models.size || F.garages.size;
+  const useDetail = narrow && done.length > 0 && done.length === w.combos.length;
+  const G = useDetail ? mtrAggDetail(done) : mtrAggCube();
+
+  const q = QMAT.trim().toLowerCase();
+  const rows = [];
+  let totP = 0, totA = 0, totPrice = 0, totVol = 0, nPrice = 0, totQP = 0, totQF = 0;
+  for (let e = 0; e < d.ek.length; e++) {
+    if (!G.N[e]) continue;
+    if (SELPPZ != null && d.ppzi[e] !== SELPPZ) continue;
+    if (q && !(d.ek[e].toLowerCase().includes(q) || d.nm[e].toLowerCase().includes(q) || (d.cat[e] && d.cat[e].toLowerCase().includes(q)))) continue;
+    const f = mtrFactors(G.P[e], G.A[e], G.QP[e], G.QF[e]);
+    totP += G.P[e]; totA += G.A[e]; totQP += G.QP[e]; totQF += G.QF[e];
+    if (f.price != null) { totPrice += f.price; totVol += f.vol; nPrice++; }
+    rows.push({
+      ei: e, ek: d.ek[e], nm: d.nm[e] || "(нет в справочнике)", cat: d.cat[e], ppz: d.ppz[d.ppzi[e]] || "", mf: d.mf[d.mfi[e]] || "",
+      qp: G.QP[e], qf: G.QF[e], p: G.P[e], a: G.A[e], up: f.up, uf: f.uf,
+      dp: (f.up && f.uf) ? 100 * (f.uf / f.up - 1) : null,
+      price: f.price, vol: f.vol, ex: G.P[e] ? 100 * G.A[e] / G.P[e] : null,
+      no: G.O[e], ne: G.E[e], an: MTRU.anc[e] || 0
+    });
+  }
+  rows.sort((x, y) => (y.p + y.a) - (x.p + x.a));
+
+  /* Подгруппы плана закупа — по всем материалам среза, без учёта поиска
+     и текущего отбора ППЗ: это навигатор, а не следствие отбора. */
+  const pm = new Map();
+  for (let e = 0; e < d.ek.length; e++) {
+    if (!G.N[e]) continue;
+    const pi = d.ppzi[e];
+    let x = pm.get(pi); if (!x) pm.set(pi, x = { pi, name: d.ppz[pi] || "ППЗ не определён", code: d.ppzc[pi] || "", p: 0, a: 0, n: 0, price: 0, vol: 0 });
+    x.p += G.P[e]; x.a += G.A[e]; x.n++;
+    const f = mtrFactors(G.P[e], G.A[e], G.QP[e], G.QF[e]);
+    if (f.price != null) { x.price += f.price; x.vol += f.vol; }
+  }
+  const ppzRows = [...pm.values()].map(x => Object.assign({}, x, { ex: x.p ? 100 * x.a / x.p : null })).sort((a, b) => (b.p + b.a) - (a.p + a.a));
+
+  const yIdx = d.years.map((y, i) => i).filter(i => G.yP[i] || G.yA[i]);
+
+  host.innerHTML =
+    (useDetail
+      ? callout("info", `Считается по полной детализации (${num(done.length)} площадко-лет, ${num(sum(done, e => e.data.n))} строк) — действуют все фильтры слева, включая технику, подрядчика, метод и вид работ.`)
+      : callout(narrow ? "warn" : "info", narrow
+        ? `Витрина материалов агрегирована по коду ЕКМТР без разреза по технике и подрядчику, поэтому фильтры парка, класса, производителя, модели, гаража, подрядчика, метода и вида работ на неё <b>не действуют</b> — сейчас применены только площадка, год и CAPEX/OPEX. Чтобы они заработали, сузьте слева площадки и годы так, чтобы подгрузилась полная детализация (её объём показывает вкладка «Заказы») — эта вкладка тогда пересчитается по ней автоматически.`
+        : `Действуют фильтры площадки, года и CAPEX/OPEX. Материал прослеживается сквозным кодом ЕКМТР; каталожный номер, подгруппа плана закупа (ППЗ) и изготовитель подтянуты из справочников папки ЕКМТР — ${num(d.meta.refCodes)} позиций справочника и ${num(d.an.ms.length)} групп аналогов КСУ.`)) +
+    `<div class="kpis" id="matKpi"></div>
+     <div class="quickfind" style="margin-bottom:12px">
+       <label>Материал<input type="search" id="qMat" placeholder="№ ЕКМТР, наименование или каталожный №" value="${esc(QMAT)}"></label>
+       ${SELPPZ != null ? `<label>Отбор по ППЗ<input type="search" value="${esc(d.ppz[SELPPZ] || "ППЗ не определён")}" readonly><button class="minibtn" type="button" id="btnPpzClear" style="margin-top:6px">Снять отбор</button></label>` : ""}
+     </div>
+     <div class="grid g2">
+       ${card("Динамика потребности", "план и факт по годам среза", "cMatY", { foot: "Годы берутся из фильтра слева. Разрыв между планом и фактом в будущих годах — это ещё не исполненный план, а не экономия." })}
+       ${card("Ценовой фактор", "из чего сложилось отклонение факта от плана", "cMatF", { foot: "Δ = (цена факт − цена план) × количество факт + (количество факт − количество план) × цена план. Тождество точное, поэтому сумма эффектов равна отклонению; «прочее» — позиции, где есть только план или только факт и цену сравнить не с чем." })}
+     </div>
+     <div class="grid">${card("Подгруппы плана закупа (ППЗ)", "клик по строке — отобрать материалы подгруппы", "tPpz", { tools: dlBtn("tPpz") })}</div>
+     <div class="grid">${card("Материалы", "клик по строке — история по годам и аналоги", "tMatU", { tools: dlBtnPF("tMatU") })}</div>
+     <div id="matDet"></div>`;
+
+  document.getElementById("matKpi").innerHTML = kpi([
+    { l: "Материалов в срезе", v: num(rows.length), s: SELPPZ != null ? "в выбранной ППЗ" : (q ? `отбор «${esc(trunc(QMAT, 22))}»` : (rows.length >= d.meta.usedCodes ? "все коды контура за 2022–" + d.years[d.years.length - 1] : `из ${num(d.meta.usedCodes)} кодов за весь период`)), tone: "accent" },
+    { l: "План МТР", v: shortR(totP), s: `факт ${short(totA)} · исполнение ${pct(totP ? 100 * totA / totP : null)}` },
+    { l: "Эффект цены", v: shortR(totPrice), s: `по ${num(nPrice)} позициям, где есть и план, и факт`, tone: totPrice > 0 ? "warn" : "" },
+    { l: "Эффект объёма", v: shortR(totVol), s: "остаток отклонения — изменение потребности", tone: totVol > 0 ? "warn" : "" },
+    { l: "С аналогами", v: num(rows.filter(r => r.an > 0).length), s: "позиций с заменителями в группах КСУ" }
+  ]);
+
+  CHART.bars(host.querySelector("#cMatY"), {
+    height: 260, labels: yIdx.map(i => d.years[i]),
+    series: [
+      { name: "План МТР", color: "var(--c1)", data: yIdx.map(i => G.yP[i]) },
+      { name: "Факт МТР", color: "var(--c2)", data: yIdx.map(i => G.yA[i]) }
+    ],
+    valueFmt: shortR
+  });
+  CHART.waterfall(host.querySelector("#cMatF"), {
+    height: 260, valueFmt: shortR,
+    items: [
+      { name: "План МТР", value: totP, total: true },
+      { name: "Эффект объёма", value: totVol },
+      { name: "Эффект цены", value: totPrice },
+      { name: "Только план или только факт", value: (totA - totP) - totVol - totPrice },
+      { name: "Факт МТР", value: totA, total: true }
+    ]
+  });
+
+  tableView(host.querySelector("#tPpz"), {
+    id: "tPpz", sort: "p", rows: ppzRows, bar: "p", maxH: 340,
+    isSel: r => SELPPZ === r.pi,
+    onRow: r => { SELPPZ = SELPPZ === r.pi ? null : r.pi; SELMAT = null; renderTab(); },
+    cols: [
+      { k: "code", t: "Код", cls: "dim", fmt: v => v ? `<code style="font-size:11px">${esc(v)}</code>` : "—" },
+      { k: "name", t: "Подгруппа плана закупа", cls: "name" },
+      { k: "n", t: "Позиций", n: true, fmt: num },
+      { k: "p", t: "План МТР", n: true, fmt: shortR, pf: "plan" },
+      { k: "a", t: "Факт МТР", n: true, fmt: shortR, pf: "fact" },
+      { k: "ex", t: "Исполнение", n: true, fmt: v => v == null ? "—" : `<span class="tag ${v >= 90 && v <= 110 ? "g" : v > 110 ? "b" : "w"}">${pct(v)}</span>` },
+      { k: "price", t: "Эффект цены", n: true, fmt: shortR },
+      { k: "vol", t: "Эффект объёма", n: true, fmt: shortR }
+    ],
+    foot: { name: "Итого", n: num(sum(ppzRows, r => r.n)), p: shortR(sum(ppzRows, r => r.p)), a: shortR(sum(ppzRows, r => r.a)) }
+  });
+
+  tableView(host.querySelector("#tMatU"), {
+    id: "tMatU", sort: "p", rows, bar: "p", maxH: 560, limit: 600,
+    isSel: r => SELMAT === r.ei,
+    onRow: r => { SELMAT = SELMAT === r.ei ? null : r.ei; renderTab(); },
+    cols: [
+      { k: "ek", t: "№ ЕКМТР", cls: "dim", fmt: v => `<code style="font-size:11px">${esc(v)}</code>`, hint: "Сквозной код позиции в справочнике ЕКМТР" },
+      { k: "nm", t: "Наименование", cls: "name" },
+      { k: "cat", t: "Каталожный №", cls: "dim", fmt: v => v ? `<code style="font-size:11px">${esc(v)}</code>` : "—" },
+      { k: "ppz", t: "ППЗ", cls: "dim name" },
+      { k: "qp", t: "Кол-во план", n: true, fmt: v => v ? num(v) : "—", pf: "plan" },
+      { k: "qf", t: "Кол-во факт", n: true, fmt: v => v ? num(v) : "—", pf: "fact" },
+      { k: "up", t: "Цена план", n: true, fmt: v => v == null ? "—" : money(v), pf: "plan", hint: "Плановая стоимость, делённая на плановое количество" },
+      { k: "uf", t: "Цена факт", n: true, fmt: v => v == null ? "—" : money(v), pf: "fact", hint: "Фактическая стоимость, делённая на фактическое количество" },
+      { k: "dp", t: "Δ цены", n: true, fmt: v => v == null ? "—" : `<span class="tag ${Math.abs(v) < 10 ? "n" : v > 0 ? "b" : "g"}">${(v > 0 ? "+" : "") + NF1.format(v)}%</span>` },
+      { k: "p", t: "План МТР", n: true, fmt: shortR, pf: "plan" },
+      { k: "a", t: "Факт МТР", n: true, fmt: shortR, pf: "fact" },
+      { k: "no", t: "Заказов", n: true, fmt: num },
+      { k: "ne", t: "Единиц", n: true, fmt: num, hint: "Сколько единиц техники получали этот материал" },
+      { k: "an", t: "Аналогов", n: true, fmt: v => v ? `<span class="tag g">${v}</span>` : "—", hint: "Число заменителей в группах аналогов КСУ" }
+    ],
+    foot: { nm: `Итого по ${num(rows.length)} позициям`, qp: num(totQP), qf: num(totQF), p: shortR(totP), a: shortR(totA) }
+  });
+
+  if (SELMAT != null) mtrDetail(host.querySelector("#matDet"), SELMAT, useDetail, done);
+
+  const qi = host.querySelector("#qMat");
+  if (qi) qi.oninput = debounce(e => {
+    QMAT = e.target.value; SELMAT = null; renderTab();
+    const n = document.getElementById("qMat");
+    if (n) { n.focus(); n.setSelectionRange(n.value.length, n.value.length); }
+  }, 260);
+  const pc = host.querySelector("#btnPpzClear");
+  if (pc) pc.onclick = () => { SELPPZ = null; renderTab(); };
+};
+
+/* Разбор одного материала: история по годам и площадкам + аналоги.
+   Здесь фильтр года НЕ применяется — смысл карточки в том, чтобы
+   увидеть всю историю потребности позиции, включая годы вне среза;
+   площадка и CAPEX/OPEX применяются, чтобы карточка не противоречила
+   таблице выше. */
+function mtrDetail(host, e, useDetail, done) {
+  if (!host) return;
+  const d = MTRU.data, NY = d.years.length;
+  const okSite = d.sites.map(s => !F.sites.size || F.sites.has(s));
+  const okCx = MTR_CX.map(b => !F.capex.size || (b !== "" && F.capex.has(b)));
+  const yP = new Float64Array(NY), yA = new Float64Array(NY), yQP = new Float64Array(NY), yQF = new Float64Array(NY), yN = new Int32Array(NY);
+  const bySite = new Map();
+  for (let i = MTRU.start[e]; i < MTRU.start[e + 1]; i++) {
+    const c = d.c[i], cx = c & 3, t = c >> 2, yi = t % NY, si = (t / NY) | 0;
+    if (!okSite[si] || !okCx[cx]) continue;
+    yP[yi] += d.p[i]; yA[yi] += d.a[i]; yQP[yi] += d.qp[i]; yQF[yi] += d.qf[i]; yN[yi] += d.n[i];
+    let x = bySite.get(si); if (!x) bySite.set(si, x = { s: d.sites[si], p: 0, a: 0, qp: 0, qf: 0, o: 0, ne: 0 });
+    x.p += d.p[i]; x.a += d.a[i]; x.qp += d.qp[i]; x.qf += d.qf[i]; x.o += d.o[i]; x.ne += d.e[i];
+  }
+  const yRows = [];
+  for (let i = 0; i < NY; i++) {
+    if (!yN[i]) continue;
+    const f = mtrFactors(yP[i], yA[i], yQP[i], yQF[i]);
+    yRows.push({
+      y: d.years[i], qp: yQP[i], qf: yQF[i], p: yP[i], a: yA[i], up: f.up, uf: f.uf,
+      dq: null, dup: null, ex: yP[i] ? 100 * yA[i] / yP[i] : null, price: f.price, vol: f.vol, n: yN[i]
+    });
+  }
+  /* год к году: как менялась заявленная потребность и плановая цена */
+  yRows.forEach((r, i) => {
+    const prev = yRows[i - 1];
+    if (!prev) return;
+    if (prev.qp > 0 && r.qp > 0) r.dq = 100 * (r.qp / prev.qp - 1);
+    if (prev.up && r.up) r.dup = 100 * (r.up / prev.up - 1);
+  });
+
+  const siteRows = [...bySite.values()].map(x => {
+    const f = mtrFactors(x.p, x.a, x.qp, x.qf);
+    return { site: M.sites[x.s] || x.s, qp: x.qp, qf: x.qf, p: x.p, a: x.a, up: f.up, uf: f.uf, o: x.o, ne: x.ne, ex: x.p ? 100 * x.a / x.p : null };
+  }).sort((a, b) => (b.p + b.a) - (a.p + a.a));
+
+  /* Аналоги: собираем всех участников групп, где встречается позиция,
+     и сразу показываем, сколько их самих потрачено в текущем срезе —
+     чтобы было видно не только «чем можно заменить», но и «чем уже
+     заменяют». Использование аналогов считается по тому же источнику,
+     что и таблица выше. */
+  const G2 = useDetail ? mtrAggDetail(done) : mtrAggCube();
+  const seen = new Map();
+  (MTRU.ang.get(e) || []).forEach(g => {
+    const lead = d.an.l[g];
+    const members = d.an.ms[g];
+    const push = (m, tpi, opi, isLead) => {
+      if (m == null || m === e) return;
+      const k = m;
+      if (!seen.has(k)) seen.set(k, {
+        ek: d.ek[m], nm: d.nm[m] || "(нет в справочнике)", cat: d.cat[m], ppz: d.ppz[d.ppzi[m]] || "",
+        tp: isLead ? "Ведущая деталь" : (d.an.tp[tpi] || ""), op: d.an.op[opi] || "",
+        kd: d.an.kd[d.an.kdi[g]] || "", p: G2.P[m] || 0, a: G2.A[m] || 0, qf: G2.QF[m] || 0,
+        uf: G2.QF[m] > 0 ? G2.A[m] / G2.QF[m] : null, used: G2.N[m] > 0
+      });
+    };
+    members.forEach((m, j) => push(m, d.an.mt[g][j], d.an.mo[g][j], false));
+    const j = members.indexOf(e);
+    push(lead, j >= 0 ? d.an.mt[g][j] : 0, j >= 0 ? d.an.mo[g][j] : 0, true);
+  });
+  const anRows = [...seen.values()].sort((a, b) => (b.p + b.a) - (a.p + a.a));
+
+  const cur = mtrFactors(sum(yRows, r => r.p), sum(yRows, r => r.a), sum(yRows, r => r.qp), sum(yRows, r => r.qf));
+  const cheaper = anRows.filter(r => r.uf != null && cur.uf != null && r.uf < cur.uf);
+
+  host.innerHTML = `<div class="grid g2">
+      ${card("История позиции: " + trunc(d.nm[e] || d.ek[e], 60), `№ ЕКМТР ${d.ek[e]}${d.cat[e] ? " · каталожный № " + d.cat[e] : ""}${d.mf[d.mfi[e]] ? " · " + d.mf[d.mfi[e]] : ""} · ППЗ: ${d.ppz[d.ppzi[e]] || "не определена"}`, "tMatY", { tools: dlBtn("tMatY"), foot: "Годы показаны все, что есть в данных по этой позиции, — фильтр года на карточку не действует, иначе историю потребности не увидеть. Площадка и CAPEX/OPEX применены." })}
+      ${card("Количество по годам", "заявленная потребность против выданного", "cMatQ")}
+    </div>
+    <div class="grid">${card("По площадкам", "где эта позиция расходуется", "tMatS", { tools: dlBtn("tMatS") })}</div>
+    <div class="grid">${card("Аналоги и заменители", anRows.length ? `${num(anRows.length)} позиций в группах аналогов КСУ` : "групп аналогов для этой позиции нет", "tMatA", { tools: dlBtn("tMatA"), foot: "«Прямой аналог» — взаимозаменяем без испытаний, «условный» — замена требует проверки применимости. Столбцы плана и факта — расход самого аналога в текущем срезе: пустые значения означают, что аналог у нас не закупался. Цены сравнимы, только если у позиций совпадает единица измерения: в выгрузке PM-06 её нет, количество идёт в базисной единице самой позиции." })}</div>`;
+
+  if (anRows.length && cheaper.length) {
+    host.insertAdjacentHTML("afterbegin", callout("info",
+      `У позиции ${num(anRows.length)} заменителей, и у ${num(cheaper.length)} из них фактическая цена ниже: ${cheaper.slice(0, 3).map(r => `<b>${esc(trunc(r.nm, 40))}</b> — ${money(r.uf)}`).join(", ")}${cheaper.length > 3 ? " и другие" : ""}. Текущая фактическая цена позиции — ${cur.uf == null ? "неизвестна" : money(cur.uf)}. Прежде чем считать это экономией, сверьте единицу измерения: в выгрузке PM-06 её нет.`));
+  }
+
+  tableView(host.querySelector("#tMatY"), {
+    id: "tMatY", sort: null, rows: yRows, maxH: 320,
+    cols: [
+      { k: "y", t: "Год" },
+      { k: "qp", t: "Кол-во план", n: true, fmt: v => v ? num(v) : "—" },
+      { k: "dq", t: "Δ потребности", n: true, fmt: v => v == null ? "—" : `<span class="tag ${Math.abs(v) < 15 ? "n" : v > 0 ? "b" : "g"}">${(v > 0 ? "+" : "") + NF1.format(v)}%</span>`, hint: "Плановое количество к плану предыдущего года" },
+      { k: "qf", t: "Кол-во факт", n: true, fmt: v => v ? num(v) : "—" },
+      { k: "up", t: "Цена план", n: true, fmt: v => v == null ? "—" : money(v) },
+      { k: "dup", t: "Δ цены плана", n: true, fmt: v => v == null ? "—" : `<span class="tag ${Math.abs(v) < 10 ? "n" : v > 0 ? "b" : "g"}">${(v > 0 ? "+" : "") + NF1.format(v)}%</span>`, hint: "Плановая цена к плановой цене предыдущего года" },
+      { k: "uf", t: "Цена факт", n: true, fmt: v => v == null ? "—" : money(v) },
+      { k: "p", t: "План МТР", n: true, fmt: shortR },
+      { k: "a", t: "Факт МТР", n: true, fmt: shortR },
+      { k: "ex", t: "Исполнение", n: true, fmt: v => v == null ? "—" : `<span class="tag ${v >= 90 && v <= 110 ? "g" : v > 110 ? "b" : "w"}">${pct(v)}</span>` }
+    ],
+    foot: { y: "Итого", qp: num(sum(yRows, r => r.qp)), qf: num(sum(yRows, r => r.qf)), p: shortR(sum(yRows, r => r.p)), a: shortR(sum(yRows, r => r.a)) }
+  });
+  CHART.bars(host.querySelector("#cMatQ"), {
+    height: 260, labels: yRows.map(r => r.y), valueFmt: num,
+    series: [
+      { name: "Количество план", color: "var(--c1)", data: yRows.map(r => r.qp) },
+      { name: "Количество факт", color: "var(--c2)", data: yRows.map(r => r.qf) }
+    ]
+  });
+  tableView(host.querySelector("#tMatS"), {
+    id: "tMatS", sort: "p", rows: siteRows, bar: "p", maxH: 260,
+    cols: [
+      { k: "site", t: "Площадка", cls: "name" },
+      { k: "qp", t: "Кол-во план", n: true, fmt: v => v ? num(v) : "—" },
+      { k: "qf", t: "Кол-во факт", n: true, fmt: v => v ? num(v) : "—" },
+      { k: "up", t: "Цена план", n: true, fmt: v => v == null ? "—" : money(v) },
+      { k: "uf", t: "Цена факт", n: true, fmt: v => v == null ? "—" : money(v) },
+      { k: "p", t: "План МТР", n: true, fmt: shortR },
+      { k: "a", t: "Факт МТР", n: true, fmt: shortR },
+      { k: "ex", t: "Исполнение", n: true, fmt: v => v == null ? "—" : pct(v) },
+      { k: "o", t: "Заказов", n: true, fmt: num },
+      { k: "ne", t: "Единиц", n: true, fmt: num }
+    ]
+  });
+  tableView(host.querySelector("#tMatA"), {
+    id: "tMatA", sort: "p", rows: anRows, maxH: 420,
+    empty: "Для этой позиции групп аналогов в выгрузке КСУ нет",
+    onRow: r => { const i = MTRU.ix.get(r.ek); if (i != null) { SELMAT = i; SELPPZ = null; QMAT = ""; renderTab(); } },
+    cols: [
+      { k: "ek", t: "№ ЕКМТР", cls: "dim", fmt: v => `<code style="font-size:11px">${esc(v)}</code>` },
+      { k: "nm", t: "Наименование", cls: "name" },
+      { k: "cat", t: "Каталожный №", cls: "dim", fmt: v => v ? `<code style="font-size:11px">${esc(v)}</code>` : "—" },
+      { k: "tp", t: "Тип аналога", fmt: v => v === "Прямой аналог" ? `<span class="tag g">${esc(v)}</span>` : v === "Ведущая деталь" ? `<span class="tag n">${esc(v)}</span>` : v ? `<span class="tag w">${esc(v)}</span>` : "—" },
+      { k: "op", t: "ОПИ", cls: "dim", hint: "Статус опытно-промышленных испытаний заменителя" },
+      { k: "ppz", t: "ППЗ", cls: "dim name" },
+      { k: "qf", t: "Кол-во факт", n: true, fmt: v => v ? num(v) : "—" },
+      { k: "uf", t: "Цена факт", n: true, fmt: v => v == null ? "—" : money(v) },
+      { k: "p", t: "План МТР", n: true, fmt: v => v ? shortR(v) : "—" },
+      { k: "a", t: "Факт МТР", n: true, fmt: v => v ? shortR(v) : "—" },
+      { k: "used", t: "Закупался", fmt: v => v ? `<span class="tag g">да</span>` : `<span class="tag n">нет</span>`, hint: "Встречается ли аналог в затратах текущего среза" }
+    ]
+  });
+}
+
 PANES.eo = function (host) {
   const keys = allowedEoKeys();
   const src = M.eoList.filter(r => passEo(r, keys));
@@ -2944,8 +3383,8 @@ function ensureDetailLoaded(combos) {
     if (D.dets.has(c.key)) return;
     const entry = { key: c.key, s: c.s, y: c.y, data: null, err: null, loading: true };
     D.dets.set(c.key, entry);
-    const done = d => { entry.data = d; entry.loading = false; if (TAB === "ord" || TAB === "eo") renderTab(); };
-    const fail = e => { entry.err = String(e && e.message || e); entry.loading = false; if (TAB === "ord" || TAB === "eo") renderTab(); };
+    const done = d => { entry.data = d; entry.loading = false; if (TAB === "ord" || TAB === "eo" || TAB === "mat") renderTab(); };
+    const fail = e => { entry.err = String(e && e.message || e); entry.loading = false; if (TAB === "ord" || TAB === "eo" || TAB === "mat") renderTab(); };
     if (IS_FILE_PROTO) {
       loadLocalScript("det_" + c.key, "data/" + c.key + ".local.js").then(done).catch(fail);
     } else {
@@ -3003,10 +3442,19 @@ function compsForCatalog(q) {
   CATCACHE.q = q; CATCACHE.set = s;
   return s;
 }
-function lineMatchesMtr(c) {
+/* Поиск по ЕКМТР ищет и в наименовании компонента, и в самом номере
+   ЕКМТР: пользователь чаще держит в руках код («976494»), чем точное
+   название из справочника. Код у строки может быть известен заранее
+   (полная детализация несёт поле cek) — тогда он приходит вторым
+   аргументом; иначе достаём его из индекса «имя → код». */
+function lineMatchesMtr(c, ekCode) {
   const name = String(c || "");
   const low = name.toLowerCase();
-  if (QMTR && !low.includes(QMTR.toLowerCase())) return false;
+  if (QMTR) {
+    const q = QMTR.toLowerCase();
+    const ek = String(ekCode == null ? ekOf(name) : ekCode).toLowerCase();
+    if (!low.includes(q) && !(ek && ek.includes(q))) return false;
+  }
   if (QCAT) {
     const q = QCAT.toLowerCase();
     if (low.includes(q)) return true;
@@ -3038,7 +3486,7 @@ PANES.ord = function (host) {
   host.innerHTML = head +
     `<div class="quickfind" style="margin-bottom:12px">
       <label>Заказ / ЕО<input type="search" id="qOrd" placeholder="номер заказа или единица" value="${esc(QORD)}"></label>
-      <label>ЕКМТР<input type="search" id="qMtr" placeholder="наименование компонента" value="${esc(QMTR)}"></label>
+      <label>ЕКМТР<input type="search" id="qMtr" placeholder="наименование или № ЕКМТР" value="${esc(QMTR)}"></label>
       <label>Каталожный №<input type="search" id="qCat" placeholder="номер детали производителя" value="${esc(QCAT)}"></label>
      </div>
      <div class="kpis" id="ordKpi"></div>
@@ -3097,7 +3545,7 @@ PANES.ord = function (host) {
         if (!pr) {
           pr = {
             c, qp: null, qf: null, p: 0, a: 0, up: 0, uf: 0,
-            matched: (QMTR || QCAT) ? lineMatchesMtr(c) : false,
+            matched: (QMTR || QCAT) ? lineMatchesMtr(c, ek) : false,
             ek, mf, it, nd: "", ad: "", ur: 0, wcSet: new Set(), lines: 0
           };
           x.pos.set(pk, pr);
@@ -3640,8 +4088,24 @@ async function updRun() {
     UPD.merged.ordidx = PM06.mergeOrderIndex(ORDIDX, UPD.results);
     const oem = PM06.mergeOemIndex(OEMIDX, UPD.results);
     UPD.merged.oemidx = oem.idx;
+    /* Витрина материалов (вкладка «Материалы / ППЗ») пересобирается тем
+       же проходом: иначе после обновления она молча показывала бы старые
+       годы. Справочная часть — ППЗ, каталожные номера, аналоги — берётся
+       из уже опубликованной витрины и не меняется; обновляется только
+       использование по выбранным площадко-годам. */
+    let matNote = "";
+    try {
+      const cur = await mtrEnsure();
+      const mm = PM06.mergeMatUse(cur, UPD.results);
+      UPD.merged.mtr = mm.mtr;
+      matNote = ` Витрина материалов пересобрана: ${num(mm.addedRows)} строк по обновлённым площадко-годам` +
+        (mm.addedCodes ? `, добавлено ${num(mm.addedCodes)} новых кодов ЕКМТР (без ППЗ и каталожного номера — их даст только обновление справочников папки ЕКМТР)` : "") + ".";
+    } catch (e) {
+      matNote = ` Витрину материалов обновить не удалось (${String(e && e.message || e)}) — файл mtr.json останется прежним, вкладка «Материалы / ППЗ» будет показывать старые данные.`;
+    }
     UPD.msg = `Готово: пересобрано ${UPD.results.length} выгрузок.` +
       (oem.added ? ` В каталог каталожных номеров добавлено ${num(oem.added)} позиций.` : "") +
+      matNote +
       ` Проверьте изменения ниже, затем примените или скачайте файлы.`;
   } catch (e) {
     UPD.err = String(e && e.message || e);
@@ -3659,6 +4123,7 @@ function updApply() {
   M.cube_files = (CUBE_RAW.files || []).length;
   if (UPD.merged.ordidx) { ORDIDX = UPD.merged.ordidx; ORDIDX_MAP = null; }
   if (UPD.merged.oemidx) { OEMIDX = UPD.merged.oemidx; buildOemIndex(); }
+  if (UPD.merged.mtr) mtrAdopt(UPD.merged.mtr);
   /* Полная детализация обновлённых площадко-лет уже разобрана — кладём
      её в кэш сразу, чтобы вкладки «Заказы» и «Оборудование» показывали
      новые данные, а не подтягивали старый файл с диска. */
@@ -3684,6 +4149,7 @@ async function updDownload() {
     add("capex.json", "capex", UPD.merged.capex);
     if (UPD.merged.ordidx) add("order_idx.json", "ordidx", UPD.merged.ordidx);
     if (UPD.merged.oemidx) add("oem_idx.json", "oem", UPD.merged.oemidx);
+    if (UPD.merged.mtr) add("mtr.json", "mtru", UPD.merged.mtr);
     UPD.results.forEach(r => {
       const key = r.meta.site + "_" + r.meta.year;
       add(`data/${key}.json`, "det_" + key, r.detail);
@@ -3821,7 +4287,7 @@ function setTab(t) {
   window.scrollTo({ top: 0, behavior: "instant" in document.documentElement.style ? "instant" : "auto" });
 }
 function maybeLoadDetail() {
-  if (TAB !== "ord" && TAB !== "eo") return;
+  if (TAB !== "ord" && TAB !== "eo" && TAB !== "mat") return;
   const w = wantedDetail();
   if (w.combos.length <= DET_AUTO_CAP) DET_FORCE = false;
   if (w.load) ensureDetailLoaded(w.combos);

@@ -3047,25 +3047,50 @@ PANES.ord = function (host) {
         let x = lines.get(o);
         if (!x) {
           const od = d.od && d.od[o];
-          lines.set(o, x = { o, e, w: w2, u, wcSet: new Set(), p: 0, a: 0, up: 0, uf: 0, n: 0, rows: [], bs: od ? od[0] : null, be: od ? od[1] : null });
+          lines.set(o, x = { o, e, w: w2, u, wcSet: new Set(), p: 0, a: 0, up: 0, uf: 0, n: 0, rawN: 0, pos: new Map(), bs: od ? od[0] : null, be: od ? od[1] : null });
         }
         if (wc) x.wcSet.add(wc);
-        x.p += d.p[i] || 0; x.a += d.a[i] || 0; x.up += d.up[i] || 0; x.uf += d.uf[i] || 0; x.n++;
+        x.p += d.p[i] || 0; x.a += d.a[i] || 0; x.up += d.up[i] || 0; x.uf += d.uf[i] || 0; x.rawN++;
         const ci = d.ci[i];
-        x.rows.push({
-          c, qp: d.qp[i], qf: d.qf[i], p: d.p[i], a: d.a[i], up: d.up[i], uf: d.uf[i], matched: (QMTR || QCAT) ? lineMatchesMtr(c) : false,
-          ek: (d.cek && d.cek[ci]) || "",
-          nd: (d.nd && d.ndi) ? (d.nd[d.ndi[i]] || "") : "",
-          ad: (d.ad && d.adi) ? (d.ad[d.adi[i]] || "") : "",
-          mf: (d.mf && d.mfi) ? (d.mf[d.mfi[i]] || "") : "",
-          it: (d.it && d.iti) ? (d.it[d.iti[i]] || "") : "",
-          ur: (d.ur && d.ur[i]) || 0,
-          wc
-        });
+        const ek = (d.cek && d.cek[ci]) || "";
+        const mf = (d.mf && d.mfi) ? (d.mf[d.mfi[i]] || "") : "";
+        const it = (d.it && d.iti) ? (d.it[d.iti[i]] || "") : "";
+        const nd = (d.nd && d.ndi) ? (d.nd[d.ndi[i]] || "") : "";
+        const ad = (d.ad && d.adi) ? (d.ad[d.adi[i]] || "") : "";
+        /* В выгрузке PM-06 план и факт одной позиции лежат в РАЗНЫХ
+           строках: у одной заполнено только количество и стоимость плана,
+           у другой — только факта. Из-за этого один и тот же материал
+           показывался в составе заказа дважды, и план с фактом нельзя
+           было сопоставить глазами. Собираем строки одной позиции
+           (компонент + № ЕКМТР + тип позиции + изготовитель) в одну. */
+        const pk = ci + "\u0000" + ek + "\u0000" + it + "\u0000" + mf;
+        let pr = x.pos.get(pk);
+        if (!pr) {
+          pr = {
+            c, qp: null, qf: null, p: 0, a: 0, up: 0, uf: 0,
+            matched: (QMTR || QCAT) ? lineMatchesMtr(c) : false,
+            ek, mf, it, nd: "", ad: "", ur: 0, wcSet: new Set(), lines: 0
+          };
+          x.pos.set(pk, pr);
+        }
+        if (d.qp[i] != null) pr.qp = (pr.qp || 0) + d.qp[i];
+        if (d.qf[i] != null) pr.qf = (pr.qf || 0) + d.qf[i];
+        pr.p += d.p[i] || 0; pr.a += d.a[i] || 0; pr.up += d.up[i] || 0; pr.uf += d.uf[i] || 0;
+        if (!pr.nd && nd) pr.nd = nd;
+        if (!pr.ad && ad) pr.ad = ad;
+        if (d.ur && d.ur[i]) pr.ur = 1;
+        if (wc) pr.wcSet.add(wc);
+        pr.lines++;
         if (e) x.e = e;
       }
     });
-    orders = [...lines.values()].map(x => { x.wc = [...x.wcSet].join(", "); delete x.wcSet; return x; });
+    orders = [...lines.values()].map(x => {
+      x.wc = [...x.wcSet].join(", ");
+      x.rows = [...x.pos.values()].map(pr => { pr.wc = [...pr.wcSet].join(", "); delete pr.wcSet; return pr; });
+      x.n = x.rows.length;
+      delete x.wcSet; delete x.pos;
+      return x;
+    });
   } else {
     source = "cube";
     const keys = allowedEoKeys();
@@ -3157,7 +3182,7 @@ PANES.ord = function (host) {
   };
 
   const cur = orders.find(o => o.o === SEL.order);
-  const t = { p: sum(orders, o => o.p), a: sum(orders, o => o.a), up: sum(orders, o => o.up), uf: sum(orders, o => o.uf), n: sum(orders, o => o.n) };
+  const t = { p: sum(orders, o => o.p), a: sum(orders, o => o.a), up: sum(orders, o => o.up), uf: sum(orders, o => o.uf), n: sum(orders, o => o.n), rawN: sum(orders, o => o.rawN || 0) };
   const mtrNote = (QMTR || QCAT)
     ? `отбор по ${QCAT ? "каталожному № «" + QCAT + "»" : "ЕКМТР «" + QMTR + "»"}${eoLevelComps ? " — на уровне единицы оборудования" : ""}`
     : (source === "detail" ? "полная детализация площадки и года" : "встроенный срез куба");
@@ -3169,8 +3194,11 @@ PANES.ord = function (host) {
     const curKpis = [
       { l: "Открытый заказ", v: esc(cur.o), s: cur.e ? esc(trunc(cur.e, 34)) : "единица не определена", tone: "accent" },
       {
-        l: "Компонентов в заказе", v: num(rowsAll.length),
-        s: (QMTR || QCAT) ? `совпало с поиском: ${num(rowsMatched.length)}` : (source === "detail" ? "полный состав заказа" : "на уровне единицы оборудования — не заказа"),
+        l: "Позиций в заказе", v: num(rowsAll.length),
+        s: (QMTR || QCAT) ? `совпало с поиском: ${num(rowsMatched.length)}`
+          : (source === "detail"
+            ? `полный состав заказа${cur.rawN > rowsAll.length ? ` · собрано из ${num(cur.rawN)} строк выгрузки` : ""}`
+            : "на уровне единицы оборудования — не заказа"),
         tone: (QMTR || QCAT) ? "info" : undefined
       },
       { l: "План ТОиР заказа", v: shortR(cur.tp), s: `МТР ${short(cur.p)} · УСО ${short(cur.up)}` },
@@ -3182,7 +3210,7 @@ PANES.ord = function (host) {
     document.getElementById("ordKpi").innerHTML = kpi([
       { l: "Заказов", v: num(orders.length), s: mtrNote, tone: "accent" },
       source === "detail"
-        ? { l: "Строк компонентов", v: num(t.n), s: "привязаны к конкретным заказам" }
+        ? { l: "Позиций компонентов", v: num(t.n), s: `привязаны к заказам${t.rawN > t.n ? ` · из ${num(t.rawN)} строк выгрузки` : ""}` }
         : { l: "Позиций ЕКМТР в срезе", v: num(linesInSlice), s: "известна единица, но не номер заказа", tone: "warn" },
       { l: "План ТОиР", v: shortR(t.p + t.up), s: `МТР ${short(t.p)} · УСО ${short(t.up)}` },
       { l: "Факт ТОиР", v: shortR(t.a + t.uf), s: "исполнение " + pct((t.p + t.up) ? 100 * (t.a + t.uf) / (t.p + t.up) : null) }
@@ -3231,6 +3259,10 @@ PANES.ord = function (host) {
     ],
     empty: cur ? "У этой единицы нет позиций ЕКМТР во встроенном срезе" : (source === "detail" ? "Выберите заказ слева" : "Выберите заказ слева — покажем позиции его единицы оборудования")
   });
+  if (cur && source === "detail" && cur.rawN > (cur.rows || []).length) {
+    host.querySelector("#tComp").insertAdjacentHTML("afterbegin",
+      callout("info", `В выгрузке PM-06 план и факт одной позиции приходят разными строками: в одной заполнено только количество и стоимость плана, в другой — только факта. Здесь они сведены в одну строку — ${num((cur.rows || []).length)} позиций собрано из ${num(cur.rawN)} строк выгрузки, поэтому план и факт можно сравнивать по каждому материалу.`));
+  }
   if (cur && (QMTR || QCAT)) {
     host.querySelector("#tComp").insertAdjacentHTML("afterbegin",
       callout("info", `Показан весь состав заказа ${esc(cur.o)} (${num(cur.rows.length)} позиций) — строки, совпавшие с поиском по ${QCAT ? "каталожному №" : "ЕКМТР"} «${esc(QCAT || QMTR)}», подсвечены.`));

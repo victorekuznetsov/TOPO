@@ -2519,15 +2519,52 @@ PANES.eo = function (host) {
   const sel = SEL.eo ? rows.find(r => eoKey(r.e) === eoKey(SEL.eo.e)) : null;
   const t = { p: sum(rows, r => r.p), a: sum(rows, r => r.a), up: sum(rows, r => r.up), uf: sum(rows, r => r.uf), o: sum(rows, r => r.o) };
 
-  let ords = [];
-  if (sel) ords = M.orders.filter(r => eoKey(r.e) === sel.k && YS.has(String(r.y)) && (!F.sites.size || F.sites.has(r.s)) && (!F.methods.size || F.methods.has(r.u)) && (!F.works.size || F.works.has(r.w)) && (!F.contractors.size || F.contractors.has(vendor(r.wc))) && inMonth(r.m))
+  /* Раньше «Заказы единицы» всегда читались из M.orders — встроенного
+     среза 70 384 крупнейших заказов из 383 110 (18,4%). У единицы со
+     110 заказами почти всегда в этот срез попадал один-два, а не все.
+     Годовой файл полной детализации нужен только по ОДНОЙ площадке —
+     площадке самой единицы, максимум 6 лет — это меньше DET_AUTO_CAP,
+     поэтому грузим её всегда автоматически, независимо от того, сколько
+     площадок выбрано в фильтре слева (глобальный порог на вкладке
+     «Заказы» тут ни при чём — там речь о произведении площадок×годов). */
+  let ords = [], ordSource = "cube", detLoading = false;
+  if (sel) {
+    const combos = detCombos().filter(c => c.s === sel.s);
+    ensureDetailLoaded(combos);
+    const details = loadedDetails(combos);
+    detLoading = combos.length > details.length;
+    if (details.length) {
+      ordSource = "detail";
+      const map = new Map();
+      details.forEach(entry => {
+        const d = entry.data;
+        for (let i = 0; i < d.n; i++) {
+          const e = d.e[d.ei[i]];
+          if (eoKey(e) !== sel.k) continue;
+          const u = d.u[i], w2 = d.w[d.wi[i]], o = d.o[i];
+          if (F.methods.size && !F.methods.has(u) && !(F.methods.has("Хозспособ") && u === "ХС") && !(F.methods.has("Комбинированный") && u === "Комб")) continue;
+          if (F.works.size && !F.works.has(w2)) continue;
+          let x = map.get(o);
+          if (!x) { const od = d.od && d.od[o]; x = { o, m: od && od[0] ? od[0].slice(0, 7) : null, u, w: w2, wc: "", p: 0, a: 0, up: 0, uf: 0 }; map.set(o, x); }
+          x.p += d.p[i] || 0; x.a += d.a[i] || 0; x.up += d.up[i] || 0; x.uf += d.uf[i] || 0;
+        }
+      });
+      ords = [...map.values()].sort((a, b) => (b.p + b.a + b.uf) - (a.p + a.a + a.uf));
+    }
+  }
+  if (sel && ordSource === "cube") ords = M.orders.filter(r => eoKey(r.e) === sel.k && YS.has(String(r.y)) && (!F.sites.size || F.sites.has(r.s)) && (!F.methods.size || F.methods.has(r.u)) && (!F.works.size || F.works.has(r.w)) && (!F.contractors.size || F.contractors.has(vendor(r.wc))) && inMonth(r.m))
     .map(r => ({ o: r.o, m: r.m, u: r.u, w: r.w, wc: vendor(r.wc), p: r.p, a: r.a, up: r.up, uf: r.uf }))
     .sort((a, b) => (b.p + b.a + b.uf) - (a.p + a.a + a.uf));
+
+  const ordFoot = !sel ? "" : ordSource === "detail"
+    ? `Полная детализация «заказ → компонент» по площадке единицы (${(detCombos().filter(c => c.s === sel.s)).map(c => c.y).sort().join(", ")}) — все ${num(ords.length)} заказов этой единицы, не только крупнейшие. Подрядчик здесь не хранится источником.${F.contractors.size ? " Фильтр «Подрядчик» на эту таблицу поэтому не действует." : ""}`
+    : detLoading ? "Догружается полная детализация по площадке единицы — сейчас показан встроенный срез крупнейших заказов, таблица обновится сама."
+    : `Встроенный срез заказов — ${num(M.cov.orders.rows)} строк из ${num(M.cov.orders.src)} в источнике (${pct(100 * M.cov.orders.rows / (M.cov.orders.src || 1))}): сохранены крупнейшие. Полная детализация не загрузилась — откройте вкладку «Заказы» по этой площадке и году.`;
 
   host.innerHTML =
     `<div class="kpis" id="eoKpi"></div>
      <div class="grid">${card("Единицы оборудования", `${num(rows.length)} единиц · клик открывает заказы`, "tEo", { tools: dlBtn("tEo") })}</div>
-     <div class="grid">${card(sel ? "Заказы единицы: " + sel.e : "Заказы выбранной единицы", sel ? "" : "выберите строку в таблице выше", "tEoOrd", { tools: dlBtn("tEoOrd"), foot: `Встроенный срез заказов — ${num(M.cov.orders.rows)} строк из ${num(M.cov.orders.src)} в источнике (${pct(100 * M.cov.orders.rows / (M.cov.orders.src || 1))}): сохранены крупнейшие. Полная детализация — на вкладке «Заказы», по площадкам и годам из фильтра слева (не только по одной штуке).` })}</div>`;
+     <div class="grid">${card(sel ? "Заказы единицы: " + sel.e : "Заказы выбранной единицы", sel ? "" : "выберите строку в таблице выше", "tEoOrd", { tools: dlBtn("tEoOrd"), foot: ordFoot })}</div>`;
   document.getElementById("eoKpi").innerHTML = kpi([
     { l: "Единиц в срезе", v: num(rows.length), s: `${num(rows.filter(r => r.ktg != null).length)} с данными КТГ`, tone: "accent" },
     { l: "План ТОиР", v: shortR(t.p + t.up), s: `МТР ${short(t.p)} · УСО ${short(t.up)}` },
@@ -2556,11 +2593,11 @@ PANES.eo = function (host) {
     cols: [
       { k: "o", t: "Заказ" }, { k: "m", t: "Базис-месяц", fmt: v => v ? esc(mLabel(v)) : "—" },
       { k: "u", t: "Способ", cls: "dim" }, { k: "w", t: "Вид работы", cls: "dim name" },
-      { k: "wc", t: "Исполнитель / РМ", cls: "dim name" },
+      { k: "wc", t: "Исполнитель / РМ", cls: "dim name", fmt: v => v || "—" },
       { k: "p", t: "План МТР", n: true, fmt: shortR }, { k: "a", t: "Факт МТР", n: true, fmt: shortR },
       { k: "up", t: "План УСО", n: true, fmt: shortR }, { k: "uf", t: "Факт УСО", n: true, fmt: shortR }
     ],
-    empty: sel ? "Заказы этой единицы не попали во встроенный срез — откройте вкладку «Заказы» и загрузите полную детализацию по площадке и году" : "Выберите единицу оборудования в таблице выше"
+    empty: sel ? (detLoading ? "Загружается полная детализация…" : "У этой единицы нет заказов в выбранном периоде/фильтрах") : "Выберите единицу оборудования в таблице выше"
   });
 };
 

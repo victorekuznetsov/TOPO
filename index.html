@@ -1036,6 +1036,7 @@ function buildModel(cube) {
   M.mtrCat = cube.mtrCat || [];
   M.orders = unpack(cube.order_pack, cube.order_cols);
   M.mtrList = unpack(cube.mtr_pack, cube.mtr_cols);
+  M.capex = M.capex || [];
 
   M.years = uniq(M.combo.map(r => String(r.y))).sort();
   M.methods = uniq(M.combo.map(r => r.u)).sort();
@@ -3906,26 +3907,37 @@ function showLocalOpen(reason) {
   bootEl.innerHTML =
     `<div class="callout bad" style="max-width:640px"><svg class="ic"><use href="#i-warn"/></svg><div>
       <b>Не удалось загрузить данные по сети.</b><br>${esc(reason || "")}<br><br>
-      Если страница открыта с диска — укажите файлы из той же папки, куда распакован архив:
+      Если страница открыта с диска — укажите файлы из той же папки, куда распакован архив. Обязателен только cube.json — без остальных дашборд откроется, но часть вкладок будет неполной (см. подсказку у каждого поля):
       <div style="margin:12px 0;display:flex;flex-direction:column;gap:8px">
-        <label>cube.json <input type="file" id="localCube" accept=".json,application/json"></label>
-        <label>ktg.json <input type="file" id="localKtg" accept=".json,application/json"></label>
+        <label>cube.json (обязателен) <input type="file" id="localCube" accept=".json,application/json"></label>
+        <label>ktg.json — готовность парка (КТГ) <input type="file" id="localKtg" accept=".json,application/json"></label>
+        <label>oem_idx.json — каталожные номера <input type="file" id="localOem" accept=".json,application/json"></label>
+        <label>ekmtr_idx.json — коды ЕКМТР <input type="file" id="localEk" accept=".json,application/json"></label>
+        <label>capex.json — вкладка CAPEX/OPEX <input type="file" id="localCapex" accept=".json,application/json"></label>
+        <label>order_idx.json — полная детализация заказов <input type="file" id="localOrdIdx" accept=".json,application/json"></label>
         <button type="button" id="localGo">Открыть локально</button>
       </div>
-      На GitHub Pages файлы подгружаются сами. Для папки на диске можно также запустить в ней: <code>python -m http.server</code>
+      На GitHub Pages файлы подгружаются сами. Для папки на диске лучше запустить в ней: <code>python -m http.server</code> — тогда подгрузится всё, включая полную детализацию заказов по клику (её тоже нельзя выбрать файлом вручную).
     </div></div>`;
   document.getElementById("localGo").onclick = async () => {
     const cf = document.getElementById("localCube").files[0];
     const kf = document.getElementById("localKtg").files[0];
+    const oemF = document.getElementById("localOem").files[0];
+    const ekF = document.getElementById("localEk").files[0];
+    const capexF = document.getElementById("localCapex").files[0];
+    const ordIdxF = document.getElementById("localOrdIdx").files[0];
     if (!cf) { alert("Выберите cube.json"); return; }
     try {
       setBoot(10, "чтение cube.json…");
       const cube = JSON.parse(await cf.text());
       let ktg = null;
-      if (kf) {
-        setBoot(80, "чтение ktg.json…");
-        ktg = JSON.parse(await kf.text());
-      }
+      if (kf) { setBoot(50, "чтение ktg.json…"); ktg = JSON.parse(await kf.text()); }
+      if (oemF) { setBoot(60, "чтение oem_idx.json…"); try { OEMIDX = JSON.parse(await oemF.text()); } catch (e) { console.warn("oem_idx:", e); } }
+      buildOemIndex();
+      if (ekF) { setBoot(68, "чтение ekmtr_idx.json…"); try { EKIDX = JSON.parse(await ekF.text()); } catch (e) { console.warn("ekmtr_idx:", e); } }
+      buildEkIndex();
+      if (capexF) { setBoot(76, "чтение capex.json…"); try { M.capex = JSON.parse(await capexF.text()); } catch (e) { console.warn("capex.json:", e); } }
+      if (ordIdxF) { setBoot(84, "чтение order_idx.json…"); try { ORDIDX = JSON.parse(await ordIdxF.text()); } catch (e) { console.warn("order_idx:", e); } }
       setBoot(90, "построение модели…");
       finishBoot(cube, ktg);
     } catch (e) {

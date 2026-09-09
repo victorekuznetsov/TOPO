@@ -474,6 +474,31 @@ body.ready #boot{display:none}
 /* =====================================================================
    0. Утилиты
    ===================================================================== */
+/* Открытие страницы с диска (file://) блокирует fetch()/XHR к соседним
+   JSON браузером (CORS у file:// происхождения) — но НЕ блокирует
+   <script src=...>: это обычная загрузка скрипта, а не сетевой запрос
+   с проверкой источника. Рядом с каждым *.json лежит *.local.js —
+   тот же самый JSON, обёрнутый в вызов __LOCAL_ASSET(key, ...). На
+   file:// эти двойники грузятся через <script>; на http(s) ничего не
+   меняется — читается обычный fetchJSON, с честным прогресс-баром. */
+const IS_FILE_PROTO = location.protocol === "file:";
+const __localAssets = {};
+const __localWaiters = {};
+function __LOCAL_ASSET(key, data) {
+  __localAssets[key] = data;
+  const w = __localWaiters[key];
+  if (w) { delete __localWaiters[key]; w.forEach(fn => fn(data)); }
+}
+function loadLocalScript(key, path) {
+  if (Object.prototype.hasOwnProperty.call(__localAssets, key)) return Promise.resolve(__localAssets[key]);
+  return new Promise((resolve, reject) => {
+    (__localWaiters[key] = __localWaiters[key] || []).push(resolve);
+    const s = document.createElement("script");
+    s.src = path;
+    s.onerror = () => reject(new Error("Не удалось загрузить " + path));
+    document.head.appendChild(s);
+  });
+}
 const $ = s => document.querySelector(s);
 const $$ = s => Array.from(document.querySelectorAll(s));
 const el = (t, c, h) => { const n = document.createElement(t); if (c) n.className = c; if (h != null) n.innerHTML = h; return n; };
@@ -2865,9 +2890,13 @@ function ensureDetailLoaded(combos) {
     if (D.dets.has(c.key)) return;
     const entry = { key: c.key, s: c.s, y: c.y, data: null, err: null, loading: true };
     D.dets.set(c.key, entry);
-    fetch("data/" + c.key + ".json").then(r => { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
-      .then(d => { entry.data = d; entry.loading = false; if (TAB === "ord" || TAB === "eo") renderTab(); })
-      .catch(e => { entry.err = String(e && e.message || e); entry.loading = false; if (TAB === "ord" || TAB === "eo") renderTab(); });
+    const done = d => { entry.data = d; entry.loading = false; if (TAB === "ord" || TAB === "eo") renderTab(); };
+    const fail = e => { entry.err = String(e && e.message || e); entry.loading = false; if (TAB === "ord" || TAB === "eo") renderTab(); };
+    if (IS_FILE_PROTO) {
+      loadLocalScript("det_" + c.key, "data/" + c.key + ".local.js").then(done).catch(fail);
+    } else {
+      fetch("data/" + c.key + ".json").then(r => { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); }).then(done).catch(fail);
+    }
   });
 }
 function wantedDetail() {
@@ -3451,7 +3480,15 @@ function setTab(t) {
   try { location.hash = t; } catch (e) { }
   renderKpis();
   renderTab();
+  maybeLoadDetail();
   window.scrollTo({ top: 0, behavior: "instant" in document.documentElement.style ? "instant" : "auto" });
+}
+function maybeLoadDetail() {
+  if (TAB !== "ord" && TAB !== "eo") return;
+  const w = wantedDetail();
+  if (w.combos.length <= DET_AUTO_CAP) DET_FORCE = false;
+  if (w.load) ensureDetailLoaded(w.combos);
+  pruneDetailCache(w.combos.map(c => c.key));
 }
 function refresh() {
   YS = activeYears();
@@ -3462,12 +3499,7 @@ function refresh() {
   renderKpis();
   renderTab();
   updatePrintCtx();
-  if (TAB === "ord" || TAB === "eo") {
-    const w = wantedDetail();
-    if (w.combos.length <= DET_AUTO_CAP) DET_FORCE = false;
-    if (w.load) ensureDetailLoaded(w.combos);
-    pruneDetailCache(w.combos.map(c => c.key));
-  }
+  maybeLoadDetail();
   saveState();
 }
 const refreshSoon = debounce(refresh, 60);
@@ -3906,8 +3938,9 @@ function showLocalOpen(reason) {
   const bootEl = document.getElementById("boot");
   bootEl.innerHTML =
     `<div class="callout bad" style="max-width:640px"><svg class="ic"><use href="#i-warn"/></svg><div>
-      <b>Не удалось загрузить данные по сети.</b><br>${esc(reason || "")}<br><br>
-      Если страница открыта с диска — укажите файлы из той же папки, куда распакован архив. Обязателен только cube.json — без остальных дашборд откроется, но часть вкладок будет неполной (см. подсказку у каждого поля):
+      <b>Не удалось загрузить данные.</b><br>${esc(reason || "")}<br><br>
+      Страница открыта с диска и не нашла рядом файлы *.local.js (cube.local.js и т.д.) — видимо, скопирован не весь архив целиком. Проверьте, что рядом с index.html лежит вся папка как есть (включая data/), и откройте страницу заново.<br><br>
+      Если файлов *.local.js там в принципе нет (старая версия архива) — укажите вручную сами *.json из той же папки. Обязателен только cube.json — без остальных дашборд откроется, но часть вкладок будет неполной (см. подсказку у каждого поля):
       <div style="margin:12px 0;display:flex;flex-direction:column;gap:8px">
         <label>cube.json (обязателен) <input type="file" id="localCube" accept=".json,application/json"></label>
         <label>ktg.json — готовность парка (КТГ) <input type="file" id="localKtg" accept=".json,application/json"></label>
@@ -3917,7 +3950,7 @@ function showLocalOpen(reason) {
         <label>order_idx.json — полная детализация заказов <input type="file" id="localOrdIdx" accept=".json,application/json"></label>
         <button type="button" id="localGo">Открыть локально</button>
       </div>
-      На GitHub Pages файлы подгружаются сами. Для папки на диске лучше запустить в ней: <code>python -m http.server</code> — тогда подгрузится всё, включая полную детализацию заказов по клику (её тоже нельзя выбрать файлом вручную).
+      Полная детализация заказов (data/*.json) файлом вручную не выбирается — при открытии с диска она подхватится сама из соседних data/*.local.js, если папка скопирована целиком.
     </div></div>`;
   document.getElementById("localGo").onclick = async () => {
     const cf = document.getElementById("localCube").files[0];
@@ -3945,20 +3978,24 @@ function showLocalOpen(reason) {
     }
   };
 }
+async function loadCore(key, jsonPath, jsPath, label, from, to) {
+  if (IS_FILE_PROTO) { setBoot(from, label + "…"); const d = await loadLocalScript(key, jsPath); setBoot(to, label + " — разбор…"); return d; }
+  return fetchJSON(jsonPath, label, from, to);
+}
 async function boot() {
   try {
     setBoot(2, "загрузка витрины затрат…");
-    const cube = await fetchJSON("cube.json", "витрина затрат", 2, 70);
+    const cube = await loadCore("cube", "cube.json", "cube.local.js", "витрина затрат", 2, 70);
     setBoot(72, "построение модели…");
     await new Promise(r => setTimeout(r, 0));
     let ktg = null;
-    try { ktg = await fetchJSON("ktg.json", "готовность парка (КТГ)", 74, 84); } catch (e) { console.warn("КТГ не загружен:", e); }
-    try { OEMIDX = await fetchJSON("oem_idx.json", "каталожные номера", 84, 87); } catch (e) { console.warn("oem_idx:", e); }
+    try { ktg = await loadCore("ktg", "ktg.json", "ktg.local.js", "готовность парка (КТГ)", 74, 84); } catch (e) { console.warn("КТГ не загружен:", e); }
+    try { OEMIDX = await loadCore("oem", "oem_idx.json", "oem_idx.local.js", "каталожные номера", 84, 87); } catch (e) { console.warn("oem_idx:", e); }
     buildOemIndex();
-    try { EKIDX = await fetchJSON("ekmtr_idx.json", "коды ЕКМТР", 87, 90); } catch (e) { console.warn("ekmtr_idx:", e); }
+    try { EKIDX = await loadCore("ekmtr", "ekmtr_idx.json", "ekmtr_idx.local.js", "коды ЕКМТР", 87, 90); } catch (e) { console.warn("ekmtr_idx:", e); }
     buildEkIndex();
-    try { M.capex = await fetchJSON("capex.json", "CAPEX/OPEX", 90, 94); } catch (e) { console.warn("capex.json:", e); M.capex = []; }
-    try { ORDIDX = await fetchJSON("order_idx.json", "указатель заказов", 94, 98); } catch (e) { console.warn("order_idx:", e); }
+    try { M.capex = await loadCore("capex", "capex.json", "capex.local.js", "CAPEX/OPEX", 90, 94); } catch (e) { console.warn("capex.json:", e); M.capex = []; }
+    try { ORDIDX = await loadCore("ordidx", "order_idx.json", "order_idx.local.js", "указатель заказов", 94, 98); } catch (e) { console.warn("order_idx:", e); }
     setBoot(98, "связывание готовности и затрат…");
     finishBoot(cube, ktg);
   } catch (e) {

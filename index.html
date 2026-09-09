@@ -1557,7 +1557,7 @@ const FDEF = {
   works: { set: () => F.works, items: () => groupBy(M.combo, "w").sort(bySum).map(x => x.name), label: v => v, search: true },
   capex: {
     set: () => F.capex, items: () => ["CAPEX", "OPEX"], label: v => v,
-    note: () => "Признак SAP «Причина инвестиций» — собран отдельно от основной витрины, без разреза по базис-месяцу и по единице оборудования. Действует только на вкладке «CAPEX / OPEX»: на Сводку, Динамику и остальные вкладки не влияет — там этого измерения нет. Подробности — на самой вкладке."
+    note: () => "Признак SAP «Причина инвестиций» — собран отдельно от основной витрины, без разреза по базис-месяцу и по единице оборудования. Действует на вкладке «CAPEX / OPEX» и на вкладках «Заказы»/«Оборудование», когда там загружена полная детализация «заказ → компонент» (там причина известна по заказу). На Сводку, Динамику и остальные сводные вкладки не влияет — там этого измерения нет."
   },
   kcls: { set: () => F.kcls, items: () => M.ktgClasses || [], label: v => v, note: () => "Справочник классов КТГ не пересекается с группами МВЗ — связь строится по совпадению единиц оборудования (" + num(M.ktgMatched || 0) + " из " + num((M.ktg || []).length) + ")." },
   makers: { set: () => F.makers, items: () => M.ktgMakers || [], label: v => v, search: true },
@@ -1565,7 +1565,7 @@ const FDEF = {
   garages: { set: () => F.garages, items: () => garagePool(), label: v => v, search: true, all: true },
   contractors: {
     set: () => F.contractors, items: () => contractorPool(), label: v => v, search: true,
-    note: () => "Подрядчик есть только там, где он указан в источнике: заказы (встроенный срез крупнейших) и контрагенты УСО. На полную детализацию «заказ → компонент» (вкладка «Заказы» с полной детализацией) и на сводные вкладки (Сводка, Динамика, КТГ × затраты) этот фильтр не действует — там нет такого измерения."
+    note: () => "Подрядчик есть там, где он указан в источнике: заказы (встроенный срез и полная детализация «заказ → компонент») и контрагенты УСО. На сводные вкладки (Сводка, Динамика, КТГ × затраты) этот фильтр не действует — там нет такого измерения."
   }
 };
 function modelPool() {
@@ -2710,11 +2710,19 @@ PANES.eo = function (host) {
           const u = d.u[i], w2 = d.w[d.wi[i]], o = d.o[i];
           if (F.methods.size && !F.methods.has(u) && !(F.methods.has("Хозспособ") && u === "ХС") && !(F.methods.has("Комбинированный") && u === "Комб")) continue;
           if (F.works.size && !F.works.has(w2)) continue;
+          const wc = (d.wc && d.wci) ? vendor(d.wc[d.wci[i]]) : "";
+          if (F.contractors.size && !F.contractors.has(wc)) continue;
+          if (F.capex.size) {
+            const bucket = capexBucket(d.orr && d.orr[o]);
+            if (!bucket || !F.capex.has(bucket)) continue;
+          }
           let x = map.get(o);
-          if (!x) { const od = d.od && d.od[o]; x = { o, m: od && od[0] ? od[0].slice(0, 7) : null, u, w: w2, wc: "", p: 0, a: 0, up: 0, uf: 0 }; map.set(o, x); }
+          if (!x) { const od = d.od && d.od[o]; x = { o, m: od && od[0] ? od[0].slice(0, 7) : null, u, w: w2, wcSet: new Set(), p: 0, a: 0, up: 0, uf: 0 }; map.set(o, x); }
+          if (wc) x.wcSet.add(wc);
           x.p += d.p[i] || 0; x.a += d.a[i] || 0; x.up += d.up[i] || 0; x.uf += d.uf[i] || 0;
         }
       });
+      map.forEach(x => { x.wc = [...x.wcSet].join(", "); delete x.wcSet; });
       ords = [...map.values()].sort((a, b) => (b.p + b.a + b.uf) - (a.p + a.a + a.uf));
     }
   }
@@ -2723,7 +2731,7 @@ PANES.eo = function (host) {
     .sort((a, b) => (b.p + b.a + b.uf) - (a.p + a.a + a.uf));
 
   const ordFoot = !sel ? "" : ordSource === "detail"
-    ? `Полная детализация «заказ → компонент» по площадке единицы (${(detCombos().filter(c => c.s === sel.s)).map(c => c.y).sort().join(", ")}) — все ${num(ords.length)} заказов этой единицы, не только крупнейшие. Подрядчик здесь не хранится источником.${F.contractors.size ? " Фильтр «Подрядчик» на эту таблицу поэтому не действует." : ""}`
+    ? `Полная детализация «заказ → компонент» по площадке единицы (${(detCombos().filter(c => c.s === sel.s)).map(c => c.y).sort().join(", ")}) — все ${num(ords.length)} заказов этой единицы, не только крупнейшие, с учётом фильтров «Подрядчик» и «CAPEX/OPEX».`
     : detLoading ? "Догружается полная детализация по площадке единицы — сейчас показан встроенный срез крупнейших заказов, таблица обновится сама."
     : `Встроенный срез заказов — ${num(M.cov.orders.rows)} строк из ${num(M.cov.orders.src)} в источнике (${pct(100 * M.cov.orders.rows / (M.cov.orders.src || 1))}): сохранены крупнейшие. Полная детализация не загрузилась — откройте вкладку «Заказы» по этой площадке и году.`;
 
@@ -2980,7 +2988,6 @@ PANES.ord = function (host) {
     head = callout("info", `Полная детализация «заказ → компонент»: ${num(done.length)}${combos.length > done.length ? " из " + num(combos.length) : ""} площадко-лет (${done.map(e => esc((M.sites[e.s] || e.s) + " · " + e.y)).join(", ")}) — ${num(sum(done, e => e.data.n))} строк компонентов, ${num(ne)} единиц оборудования, ${num(nc)} наименований.` +
       (errs.length ? ` Не удалось загрузить: ${errs.map(e => esc((M.sites[e.s] || e.s) + " · " + e.y)).join(", ")}.` : ""));
   } else if (errs.length) head = callout("bad", `Не удалось загрузить детализацию (${errs.map(e => esc(e.err)).join("; ")}). Показан встроенный срез заказов. При открытии файла с диска браузер блокирует fetch — опубликуйте страницу или запустите локальный сервер.`);
-  if (F.contractors.size && done.length) head += callout("warn", `Фильтр «Подрядчик» здесь не действует: полная детализация «заказ → компонент» не хранит исполнителя работ. Ниже показаны заказы без учёта этого фильтра. Подрядчик учитывается во встроенном срезе (без полной детализации) и в контрагентах УСО.`);
 
   host.innerHTML = head +
     `<div class="quickfind" style="margin-bottom:12px">
@@ -2998,11 +3005,12 @@ PANES.ord = function (host) {
   let orders = [], lines = new Map(), source = "";
   if (done.length) {
     source = "detail";
-    /* Полная детализация хранит только заказ/единицу/компонент — без
-       модели, производителя, класса техники, гаражного номера и парка.
-       Без этого моста фильтры слева по этим атрибутам молча ничего не
-       делали на этой вкладке (заказов оставалось столько же, сколько
-       без фильтра) — та же болезнь, что была на вкладке «МТР / ЕКМТР». */
+    /* Полная детализация хранит заказ/единицу/компонент, а теперь и
+       подрядчика (Операция заказа Рабочее место, поле wc/wci — своё на
+       каждой строке) и причину инвестиций (orr, по заказу) — фильтры
+       «Подрядчик» и «CAPEX/OPEX» здесь действуют наравне с остальными.
+       Модель/производитель/класс/гараж/парк — по-прежнему атрибуты ЕО,
+       мост на них — через allowedEoKeys()/M.eoFleet, как и раньше. */
     const keys = allowedEoKeys();
     done.forEach(entry => {
       const d = entry.data;
@@ -3012,12 +3020,19 @@ PANES.ord = function (host) {
         if (F.works.size && !F.works.has(w2)) continue;
         if (keys && !keys.has(eoKey(e))) continue;
         if (F.fleets.size) { const fl = M.eoFleet.get(eoKey(e)); if (fl && !F.fleets.has(fl)) continue; }
+        const wc = (d.wc && d.wci) ? vendor(d.wc[d.wci[i]]) : "";
+        if (F.contractors.size && !F.contractors.has(wc)) continue;
+        if (F.capex.size) {
+          const bucket = capexBucket(d.orr && d.orr[o]);
+          if (!bucket || !F.capex.has(bucket)) continue;
+        }
         if (q && !((o + " " + e + " " + c).toLowerCase().includes(q))) continue;
         let x = lines.get(o);
         if (!x) {
           const od = d.od && d.od[o];
-          lines.set(o, x = { o, e, w: w2, u, p: 0, a: 0, up: 0, uf: 0, n: 0, rows: [], bs: od ? od[0] : null, be: od ? od[1] : null });
+          lines.set(o, x = { o, e, w: w2, u, wcSet: new Set(), p: 0, a: 0, up: 0, uf: 0, n: 0, rows: [], bs: od ? od[0] : null, be: od ? od[1] : null });
         }
+        if (wc) x.wcSet.add(wc);
         x.p += d.p[i] || 0; x.a += d.a[i] || 0; x.up += d.up[i] || 0; x.uf += d.uf[i] || 0; x.n++;
         const ci = d.ci[i];
         x.rows.push({
@@ -3027,12 +3042,13 @@ PANES.ord = function (host) {
           ad: (d.ad && d.adi) ? (d.ad[d.adi[i]] || "") : "",
           mf: (d.mf && d.mfi) ? (d.mf[d.mfi[i]] || "") : "",
           it: (d.it && d.iti) ? (d.it[d.iti[i]] || "") : "",
-          ur: (d.ur && d.ur[i]) || 0
+          ur: (d.ur && d.ur[i]) || 0,
+          wc
         });
         if (e) x.e = e;
       }
     });
-    orders = [...lines.values()];
+    orders = [...lines.values()].map(x => { x.wc = [...x.wcSet].join(", "); delete x.wcSet; return x; });
   } else {
     source = "cube";
     const keys = allowedEoKeys();
@@ -3094,7 +3110,7 @@ PANES.ord = function (host) {
     { t: "Единица оборудования", kind: null, get: (o, r) => o.e || "" },
     { t: "Способ", kind: null, get: (o, r) => o.u || "" },
     { t: "Вид работы", kind: null, get: (o, r) => o.w || "" },
-    { t: "Подрядчик", kind: null, get: (o, r) => o.wc || "" },
+    { t: "Подрядчик", kind: null, get: (o, r) => (r && r.wc) || o.wc || "" },
     { t: "Базис начало", kind: null, get: (o, r) => csvDate(o.bs) },
     { t: "Базис конец", kind: null, get: (o, r) => csvDate(o.be) },
     { t: "Компонент / ЕКМТР", kind: null, get: (o, r) => r.c },
@@ -3120,7 +3136,7 @@ PANES.ord = function (host) {
     header: MTR_EXPORT_COLS.map(c => c.t),
     kind: MTR_EXPORT_COLS.map(c => c.kind),
     rows: mtrExportRows,
-    note: `${num(orders.length)} заказов · ${num(mtrExportRows.length)} строк ЕКМТР · ${source === "detail" ? "полная детализация (подрядчик здесь не хранится)" : "встроенный срез — позиции на уровне единицы оборудования, номер заказа не привязан"}`
+    note: `${num(orders.length)} заказов · ${num(mtrExportRows.length)} строк ЕКМТР · ${source === "detail" ? "полная детализация" : "встроенный срез — позиции на уровне единицы оборудования, номер заказа не привязан"}`
   };
 
   const cur = orders.find(o => o.o === SEL.order);
@@ -3159,6 +3175,7 @@ PANES.ord = function (host) {
     { k: "o", t: "Заказ", fmt: (v, r) => (r.u === "Не присвоено" && r.w === "Не присвоено" && r.e === "Не присвоено" && r.wc === "Не присвоено") ? `<span class="tag b" title="Способ, работа, единица и исполнитель не назначены">пусто</span> ${esc(v)}` : esc(v) },
     { k: "e", t: "Единица", cls: "name dim" },
     { k: "u", t: "Способ", cls: "dim" }, { k: "w", t: "Вид работы", cls: "dim name" },
+    { k: "wc", t: "Подрядчик", cls: "dim name", fmt: v => v || "—", hint: "Операция заказа Рабочее место" },
     { k: "bs", t: "Начало", cls: "dim", fmt: v => dateRu(v), hint: "Заказ. Базисный срок начала" },
     { k: "be", t: "Окончание", cls: "dim", fmt: v => dateRu(v), hint: "Заказ. Базисный срок конца" },
     { k: "n", t: source === "detail" ? "Комп." : "Строк", n: true, fmt: num, hint: source === "detail" ? "Позиций компонентов в заказе" : "Строк заказа во встроенном срезе" },

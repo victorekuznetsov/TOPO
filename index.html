@@ -2406,7 +2406,7 @@ PANES.mtr = function (host) {
     .filter(r => !keys || keys.has(eoKey(r.e)))
     .filter(r => !SEL.eo || (eoKey(r.e) === eoKey(SEL.eo.e) && (!SEL.eo.s || r.s === SEL.eo.s)))
     .filter(r => lineMatchesMtr(r.c))
-    .map(r => ({ c: r.c, oem: oemOf(r.c), e: r.e, y: r.y, g: r.g, qp: r.qp, qf: r.qf, p: r.p, a: r.a, up: r.qp ? r.p / r.qp : null, ua: r.qf ? r.a / r.qf : null, dev: (r.qp && r.qf) ? 100 * ((r.a / r.qf) / (r.p / r.qp) - 1) : null }))
+    .map(r => ({ c: r.c, ek: ekOf(r.c), oem: oemOf(r.c), e: r.e, y: r.y, g: r.g, qp: r.qp, qf: r.qf, p: r.p, a: r.a, up: r.qp ? r.p / r.qp : null, ua: r.qf ? r.a / r.qf : null, dev: (r.qp && r.qf) ? 100 * ((r.a / r.qf) / (r.p / r.qp) - 1) : null }))
     .sort((a, b) => (b.p + b.a) - (a.p + a.a));
 
   host.innerHTML =
@@ -2449,6 +2449,7 @@ PANES.mtr = function (host) {
     id: "tLines", sort: "p", rows: lines, maxH: 440, limit: 500,
     cols: [
       { k: "c", t: "Компонент", cls: "name" },
+      { k: "ek", t: "№ ЕКМТР", cls: "dim", fmt: v => v ? `<code style="font-size:11px">${esc(v)}</code>` : "—", hint: "Код компонента в справочнике ЕКМТР" },
       { k: "oem", t: "Каталожный №", cls: "dim", fmt: v => v ? `<code style="font-size:11px">${esc(v)}</code>` : "—" },
       { k: "e", t: "Единица оборудования", cls: "name dim" },
       { k: "y", t: "Год", cls: "dim" },
@@ -2476,12 +2477,14 @@ PANES.mtr = function (host) {
     let x = catM.get(r.c); if (!x) catM.set(r.c, x = { c: r.c, g: r.g, p: 0, a: 0, n: 0 });
     x.p += r.p || 0; x.a += r.a || 0; x.n++; if (r.g && !x.g) x.g = r.g;
   });
-  const cat = [...catM.values()].map(x => ({ c: x.c, g: x.g, p: x.p, a: x.a, n: x.n, ex: x.p ? 100 * x.a / x.p : null })).sort((a, b) => b.p - a.p);
+  const cat = [...catM.values()].map(x => ({ c: x.c, ek: ekOf(x.c), g: x.g, p: x.p, a: x.a, n: x.n, ex: x.p ? 100 * x.a / x.p : null })).sort((a, b) => b.p - a.p);
   const catP = sum(cat, r => r.p);
   tableView(host.querySelector("#tCat"), {
     id: "tCat", sort: "p", rows: cat, maxH: 380,
     cols: [
-      { k: "c", t: "Компонент", cls: "name" }, { k: "g", t: "Группа", cls: "dim name" },
+      { k: "c", t: "Компонент", cls: "name" },
+      { k: "ek", t: "№ ЕКМТР", cls: "dim", fmt: v => v ? `<code style="font-size:11px">${esc(v)}</code>` : "—", hint: "Код компонента в справочнике ЕКМТР" },
+      { k: "g", t: "Группа", cls: "dim name" },
       { k: "n", t: "Позиций", n: true, fmt: num },
       { k: "p", t: "План", n: true, fmt: shortR }, { k: "a", t: "Факт", n: true, fmt: shortR },
       { k: "ex", t: "Исполнение", n: true, fmt: v => v == null ? "—" : pct(v) }
@@ -2752,6 +2755,17 @@ function buildOemIndex() {
   CATCACHE.q = null; CATCACHE.set = null;
 }
 const oemOf = c => OEMBYC.get(String(c || "")) || "";
+/* Код ЕКМТР: mtrList (куб) хранит компонент только по имени, без кода —
+   он есть лишь в полной детализации заказов (data/*.json, поля c+cek).
+   Индекс ekmtr_idx.json собран из тех же 21 файла заранее (имя →
+   наиболее частый код), тем же приёмом, что и OEMBYC. */
+let EKBYC = new Map();
+function buildEkIndex() {
+  EKBYC = new Map();
+  const ek = EKIDX.ek || [], cs = EKIDX.c || [];
+  for (let i = 0; i < ek.length; i++) if (!EKBYC.has(cs[i])) EKBYC.set(cs[i], ek[i]);
+}
+const ekOf = c => EKBYC.get(String(c || "")) || "";
 const CATCACHE = { q: null, set: null };
 function compsForCatalog(q) {
   q = (q || "").trim().toLowerCase();
@@ -3169,6 +3183,7 @@ let QORD = "";
 let QMTR = "";
 let QCAT = "";
 let OEMIDX = {oem:[], c:[]};
+let EKIDX = {ek:[], c:[]};
 let ORDIDX = {combos:[], o:[], c:[], n:0};
 
 /* ---------- Полный указатель заказов (order_idx.json) ------------------
@@ -3789,9 +3804,11 @@ async function boot() {
     await new Promise(r => setTimeout(r, 0));
     let ktg = null;
     try { ktg = await fetchJSON("ktg.json", "готовность парка (КТГ)", 74, 86); } catch (e) { console.warn("КТГ не загружен:", e); }
-    try { OEMIDX = await fetchJSON("oem_idx.json", "каталожные номера", 86, 92); } catch (e) { console.warn("oem_idx:", e); }
+    try { OEMIDX = await fetchJSON("oem_idx.json", "каталожные номера", 86, 90); } catch (e) { console.warn("oem_idx:", e); }
     buildOemIndex();
-    try { ORDIDX = await fetchJSON("order_idx.json", "указатель заказов", 92, 98); } catch (e) { console.warn("order_idx:", e); }
+    try { EKIDX = await fetchJSON("ekmtr_idx.json", "коды ЕКМТР", 90, 94); } catch (e) { console.warn("ekmtr_idx:", e); }
+    buildEkIndex();
+    try { ORDIDX = await fetchJSON("order_idx.json", "указатель заказов", 94, 98); } catch (e) { console.warn("order_idx:", e); }
     setBoot(98, "связывание готовности и затрат…");
     finishBoot(cube, ktg);
   } catch (e) {

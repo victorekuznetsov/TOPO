@@ -1574,84 +1574,242 @@ function kpi(list) {
   return list.map(k => `<div class="kpi ${k.tone || ""}"><div class="l">${esc(k.l)}</div><div class="v">${k.v}</div><div class="s">${k.s || ""}</div></div>`).join("");
 }
 
-/* --- боковые фильтры --- */
+/* --- пересчёт боковых фильтров под текущий срез ---------------------- */
+/* Каждый список строится по всем ОСТАЛЬНЫМ фильтрам, но не по себе: иначе,
+   отметив одно значение, второе добавить было бы нельзя — список схлопнулся
+   бы до выбранного. Рядом со значением показан его вес в этом срезе: план
+   ТОиР для стоимостных измерений, число единиц техники для парка и модели,
+   число позиций номенклатуры для подгрупп плана закупа.
+
+   Уже отмеченные значения остаются в списке, даже если под текущим срезом
+   они пусты, — иначе снять отметку было бы нечем, а чип в контексте висел
+   бы без источника. Такие строки помечены нулевым весом. */
+
+/* Парки, разрешённые фильтром техники: витрина затрат не знает единицы
+   оборудования, поэтому класс/производитель/модель/гараж переводятся в
+   набор парков через те же ЕО, что и на вкладках. */
+function allowedFleetSet() {
+  const keys = allowedEoKeys();
+  if (!keys) return null;
+  const s = new Set();
+  keys.forEach(k => { const f = M.eoFleet.get(k); if (f) s.add(f); });
+  return s.size ? s : null;
+}
+
+/* Стоимостные измерения — из витрины затрат. skip задаёт измерение,
+   которое сейчас пересчитывается и потому себя не ограничивает. */
+function comboFacet(skip) {
+  const fl = allowedFleetSet();
+  const m = new Map();
+  const key = { sites: "s", years: "y", methods: "u", fleets: "f", works: "w" }[skip];
+  for (const r of M.combo) {
+    if (skip !== "sites" && F.sites.size && !F.sites.has(r.s)) continue;
+    if (skip !== "years" && !YS.has(String(r.y))) continue;
+    if (skip !== "methods" && F.methods.size && !F.methods.has(r.u)) continue;
+    if (skip !== "fleets" && F.fleets.size && !F.fleets.has(r.f)) continue;
+    if (skip !== "works" && F.works.size && !F.works.has(r.w)) continue;
+    if (fl && skip !== "fleets" && !fl.has(r.f)) continue;
+    if (!inMonth(r.m)) continue;
+    const v = String(r[key] == null ? "" : r[key]);
+    m.set(v, (m.get(v) || 0) + (r.p || 0) + (r.up || 0));
+  }
+  return m;
+}
+
+/* CAPEX/OPEX живёт в отдельной витрине — там есть причина инвестиций. */
+function capexFacet() {
+  const fl = allowedFleetSet();
+  const m = new Map();
+  for (const r of (M.capex || [])) {
+    if (F.sites.size && !F.sites.has(r.s)) continue;
+    if (!YS.has(String(r.y))) continue;
+    if (F.methods.size && !F.methods.has(r.u)) continue;
+    if (F.fleets.size && !F.fleets.has(r.f)) continue;
+    if (F.works.size && !F.works.has(r.w)) continue;
+    if (fl && !fl.has(r.f)) continue;
+    const b = capexBucket(r.r);
+    if (!b) continue;
+    m.set(b, (m.get(b) || 0) + (r.p || 0) + (r.up || 0));
+  }
+  return m;
+}
+
+/* Измерения техники — из справочника КТГ, вес — число единиц оборудования.
+   Год к этим спискам НЕ применяется: класс, производитель, модель и
+   гаражный номер — атрибуты справочника техники, а не периода, и КТГ
+   покрывает 2023–2026, тогда как затраты идут с 2022 по 2027. Иначе
+   выбор 2022 года опустошал бы три списка из четырёх. */
+function ktgFacet(skip) {
+  const m = new Map();
+  const key = { kcls: "f", makers: "mk", models: "md", garages: "gn" }[skip];
+  for (const r of (M.ktg || [])) {
+    if (F.sites.size && !F.sites.has(r.s)) continue;
+    if (skip !== "kcls" && F.kcls.size && !F.kcls.has(r.f)) continue;
+    if (skip !== "makers" && F.makers.size && !F.makers.has(r.mk)) continue;
+    if (skip !== "models" && F.models.size && !F.models.has(r.md)) continue;
+    if (skip !== "garages" && F.garages.size && !F.garages.has(String(r.gn))) continue;
+    if (F.fleets.size && r.fg && !F.fleets.has(r.fg)) continue;
+    const v = String(r[key] == null ? "" : r[key]);
+    if (!v) continue;
+    m.set(v, (m.get(v) || 0) + 1);
+  }
+  /* Витрина КТГ знает 1 585 единиц из ~10 600 в eoList: модель, которой в
+     КТГ нет, иначе невозможно было бы ни найти, ни выбрать. Резерв берём
+     из eoList — там веса нет, поэтому такие модели идут с нулём. */
+  if (skip === "models" && !F.kcls.size && !F.garages.size) {
+    M.eoList.forEach(r => {
+      if (!r.md || m.has(r.md)) return;
+      if (F.sites.size && !F.sites.has(r.s)) return;
+      if (F.fleets.size && !F.fleets.has(r.f)) return;
+      if (F.makers.size) { const mk = M.mkByEo.get(eoKey(r.e)); if (!mk || !F.makers.has(mk)) return; }
+      m.set(r.md, 0);
+    });
+  }
+  return m;
+}
+
+/* Подрядчики — из встроенного среза заказов и витрины УСО, вес — факт УСО. */
+function contractorFacet() {
+  const keys = allowedEoKeys();
+  const m = new Map();
+  (M.orders || []).forEach(r => {
+    if (!r.wc) return;
+    if (F.sites.size && !F.sites.has(r.s)) return;
+    if (!YS.has(String(r.y))) return;
+    if (F.methods.size && !F.methods.has(r.u)) return;
+    if (F.works.size && !F.works.has(r.w)) return;
+    if (F.fleets.size && !F.fleets.has(r.f)) return;
+    if (keys && !keys.has(eoKey(r.e))) return;
+    const v = vendor(r.wc);
+    m.set(v, (m.get(v) || 0) + (r.uf || 0));
+  });
+  if (!keys && !F.fleets.size && !F.methods.size && !F.works.size) {
+    (M.uso || []).forEach(r => {
+      if (!r.name) return;
+      if (F.sites.size && !F.sites.has(r.s)) return;
+      if (!YS.has(String(r.y))) return;
+      const v = vendor(r.name);
+      m.set(v, (m.get(v) || 0) + (r.uf || 0));
+    });
+  }
+  return m;
+}
+
+/* Подгруппы плана закупа. Пока витрина материалов не загружена, веса нет —
+   показываем код ППЗ; после загрузки считаем план МТР по текущему срезу. */
+function ppzFacet() {
+  const m = new Map();
+  const inKind = n => !F.ppzk.size || F.ppzk.has(ppzKind(n));
+  if (MTRU.state !== "ready") {
+    PPZ_LIST.forEach(n => { if (inKind(n)) m.set(n, null); });
+    return m;
+  }
+  const d = MTRU.data, NY = d.years.length;
+  const okSite = d.sites.map(x => !F.sites.size || F.sites.has(x));
+  const okYear = d.years.map(y => YS.has(String(y)));
+  const okCx = MTR_CX.map(b => !F.capex.size || (b !== "" && F.capex.has(b)));
+  const acc = new Float64Array(d.ppz.length);
+  for (let i = 0; i < d.k.length; i++) {
+    const c = d.c[i], cx = c & 3, t = c >> 2, yi = t % NY, si = (t / NY) | 0;
+    if (!okSite[si] || !okYear[yi] || !okCx[cx]) continue;
+    acc[d.ppzi[d.k[i]]] += d.p[i];
+  }
+  PPZ_LIST.forEach(n => { if (inKind(n)) m.set(n, 0); });
+  d.ppz.forEach((n, i) => { if (acc[i] && inKind(n)) m.set(n, (m.get(n) || 0) + acc[i]); });
+  return m;
+}
+
+/* Кэш на один проход перерисовки: buildSidebar вызывает items() и sub()
+   для каждого значения, пересчитывать витрину на каждое из них нельзя. */
+const FSTAT = { seq: -1, map: new Map() };
+let FSTAT_SEQ = 0;
+function facetStat(key) {
+  if (FSTAT.seq !== FSTAT_SEQ) { FSTAT.seq = FSTAT_SEQ; FSTAT.map = new Map(); }
+  if (FSTAT.map.has(key)) return FSTAT.map.get(key);
+  let m;
+  if (key === "capex") m = capexFacet();
+  else if (key === "contractors") m = contractorFacet();
+  else if (key === "ppz") m = ppzFacet();
+  else if (key === "kcls" || key === "makers" || key === "models" || key === "garages") m = ktgFacet(key);
+  else m = comboFacet(key);
+  FSTAT.map.set(key, m);
+  return m;
+}
+const COLL = new Intl.Collator("ru");
+const COLL_NUM = new Intl.Collator("ru", { numeric: true });
+/* Список значений: пересчитанные под срез плюс уже отмеченные. */
+function facetItems(key, order) {
+  const m = facetStat(key);
+  const set = FDEF[key].set();
+  set.forEach(v => { if (!m.has(v)) m.set(v, 0); });
+  const out = [...m.keys()].filter(v => v !== "");
+  return order ? out.sort(order) : out.sort((a, b) => (m.get(b) || 0) - (m.get(a) || 0) || COLL.compare(String(a), String(b)));
+}
+const facetVal = (key, v) => { const x = facetStat(key).get(v); return x == null ? null : x; };
+const facetMoney = (key, v) => { const x = facetVal(key, v); return x == null ? "" : (x ? short(x) : "0"); };
+const facetCount = (key, v) => { const x = facetVal(key, v); return x == null ? "" : num(x); };
+
+const EQ_NOTE = "Рядом со значением — сколько единиц техники ему соответствует при текущем отборе площадки и остальных признаков техники. Фильтр года на эти списки не действует: класс, производитель, модель и гараж — атрибуты справочника техники, а не периода (КТГ покрывает 2023–2026, затраты — 2022–2027).";
 const FDEF = {
-  sites: { set: () => F.sites, items: () => uniq(M.combo.map(r => r.s)).sort(), label: v => (M.sites[v] || v) + " · " + v, sub: v => short(sum(M.combo.filter(r => r.s === v), r => r.p)) },
-  years: { set: () => F.years, items: () => M.years, label: v => v, sub: v => M.yearInfo[v] ? M.yearInfo[v].status : "" },
-  methods: { set: () => F.methods, items: () => M.methods, label: v => v },
-  fleets: { set: () => F.fleets, items: () => groupBy(M.combo, "f").sort(bySum).map(x => x.name), label: v => v },
-  works: { set: () => F.works, items: () => groupBy(M.combo, "w").sort(bySum).map(x => x.name), label: v => v, search: true },
+  sites: {
+    set: () => F.sites, all: true,
+    items: () => facetItems("sites", (a, b) => String(a).localeCompare(String(b))),
+    label: v => (M.sites[v] || v) + " · " + v, sub: v => facetMoney("sites", v)
+  },
+  years: {
+    set: () => F.years, all: true, items: () => M.years,
+    label: v => v,
+    sub: v => (M.yearInfo[v] ? M.yearInfo[v].status + " · " : "") + facetMoney("years", v)
+  },
+  methods: {
+    set: () => F.methods, all: true, items: () => M.methods.filter(v => facetStat("methods").has(v) || F.methods.has(v)),
+    label: v => v, sub: v => facetMoney("methods", v)
+  },
+  fleets: { set: () => F.fleets, all: true, search: true, items: () => facetItems("fleets"), label: v => v, sub: v => facetMoney("fleets", v) },
+  works: { set: () => F.works, all: true, search: true, items: () => facetItems("works"), label: v => v, sub: v => facetMoney("works", v) },
   capex: {
-    set: () => F.capex, items: () => ["CAPEX", "OPEX"], label: v => v,
+    set: () => F.capex, all: true, items: () => ["CAPEX", "OPEX"], label: v => v, sub: v => facetMoney("capex", v),
     note: () => "Признак SAP «Причина инвестиций» — собран отдельно от основной витрины, без разреза по базис-месяцу и по единице оборудования. Действует на вкладке «CAPEX / OPEX» и на вкладках «Заказы»/«Оборудование», когда там загружена полная детализация «заказ → компонент» (там причина известна по заказу). На Сводку, Динамику и остальные сводные вкладки не влияет — там этого измерения нет."
   },
-  kcls: { set: () => F.kcls, items: () => M.ktgClasses || [], label: v => v, note: () => "Справочник классов КТГ не пересекается с группами МВЗ — связь строится по совпадению единиц оборудования (" + num(M.ktgMatched || 0) + " из " + num((M.ktg || []).length) + ")." },
-  makers: { set: () => F.makers, items: () => M.ktgMakers || [], label: v => v, search: true },
-  models: { set: () => F.models, items: () => modelPool(), label: v => v, search: true },
-  garages: { set: () => F.garages, items: () => garagePool(), label: v => v, search: true, all: true },
   ppzk: {
     set: () => F.ppzk, items: () => PPZ_KINDS, label: v => v, all: true,
     sub: v => v === PPZK.UNK
       ? num(Math.max(0, (EKIDX.ek || []).length - PPZ_COVER)) + " позиций"
       : num(PPZ_LIST.filter(x => ppzKind(x) === v).length) + " подгрупп",
-    note: () => "Деление подгрупп плана закупа на ремонтные и нет — управленческое решение, в справочнике ППЗ такого признака нет. Список «не ТОиР» задан в коде страницы константой PPZ_NON_TOIR и правится руками: сейчас это дизтопливо, реагенты и лабораторная химия, взрывчатые материалы и продукция собственного производства. «ППЗ не определена» — позиции, у которых подгруппы нет ни в одном справочнике; их " + num(PPZ_LIST.length ? ((EKIDX.ek || []).length - PPZ_COVER) : 0) + " в справочнике ЕКМТР, и они не относятся ни к одной стороне. Пока ничего не выбрано, вкладка «Запасы и вовлечение» по-прежнему считает показатели без номенклатуры «не ТОиР», остальные вкладки показывают всё."
+    note: () => "Деление подгрупп плана закупа на ремонтные и нет — управленческое решение, в справочнике ППЗ такого признака нет. Список «не ТОиР» задан в коде страницы константой PPZ_NON_TOIR и правится руками: сейчас это дизтопливо, реагенты и лабораторная химия, взрывчатые материалы и продукция собственного производства. «ППЗ не определена» — позиции, у которых подгруппы нет ни в одном справочнике; они не относятся ни к одной стороне. Пока ничего не выбрано, вкладка «Запасы и вовлечение» по-прежнему считает показатели без номенклатуры «не ТОиР», остальные вкладки показывают всё."
   },
   ppz: {
-    set: () => F.ppz, items: () => ppzPool(), label: v => ppzLabel(v), search: true, all: true,
+    set: () => F.ppz, all: true, search: true,
+    items: () => MTRU.state === "ready" ? facetItems("ppz") : facetItems("ppz", () => 0),
+    label: v => (PPZ_CODE.get(v) ? PPZ_CODE.get(v) + " · " : "") + v,
+    sub: v => MTRU.state === "ready" ? facetMoney("ppz", v) : (PPZ_CODE.get(v) || ""),
     note: () => (F.ppzk.size ? "Список сужен фильтром «ППЗ: ТОиР / не ТОиР» — показаны только подгруппы выбранного класса (" + num(ppzPool().length) + " из " + num(PPZ_LIST.length) + "). " : "") +
-      "Подгруппа плана закупа — свойство позиции номенклатуры, а не заказа. Действует на вкладках «Материалы / ППЗ», «Запасы и вовлечение», «МТР / ЕКМТР» и на составе заказов (вкладки «Заказы» и «Оборудование»). На Сводку, Динамику, КТГ и УСО не влияет: там затраты собраны по заказам, без разреза по номенклатуре. ППЗ известна у " + num(PPZ_COVER) + " из " + num((EKIDX.ek || []).length) + " позиций справочника ЕКМТР — у остальных её нет в источниках, они отбором по ППЗ не отбираются.",
-    sub: v => PPZ_CODE.get(v) || ""
+      "Подгруппа плана закупа — свойство позиции номенклатуры, а не заказа. Действует на вкладках «Материалы / ППЗ», «Запасы и вовлечение», «МТР / ЕКМТР» и на составе заказов (вкладки «Заказы» и «Оборудование»). На Сводку, Динамику, КТГ и УСО не влияет: там затраты собраны по заказам, без разреза по номенклатуре. ППЗ известна у " + num(PPZ_COVER) + " из " + num((EKIDX.ek || []).length) + " позиций справочника ЕКМТР — у остальных её нет в источниках, они отбором по ППЗ не отбираются." +
+      (MTRU.state === "ready" ? "" : " Суммы рядом с подгруппами появятся после открытия вкладки «Материалы / ППЗ» — вместе с витриной материалов.")
+  },
+  kcls: {
+    set: () => F.kcls, all: true, search: true, items: () => facetItems("kcls"), label: v => v, sub: v => facetCount("kcls", v),
+    note: () => "Справочник классов КТГ не пересекается с группами МВЗ — связь строится по совпадению единиц оборудования (" + num(M.ktgMatched || 0) + " из " + num((M.ktg || []).length) + "). " + EQ_NOTE
+  },
+  makers: { set: () => F.makers, all: true, search: true, items: () => facetItems("makers"), label: v => v, sub: v => facetCount("makers", v), note: () => EQ_NOTE },
+  models: { set: () => F.models, all: true, search: true, items: () => facetItems("models"), label: v => v, sub: v => facetCount("models", v), note: () => EQ_NOTE },
+  garages: {
+    set: () => F.garages, all: true, search: true,
+    items: () => facetItems("garages", (a, b) => COLL_NUM.compare(String(a), String(b))),
+    label: v => v, sub: v => facetCount("garages", v), note: () => EQ_NOTE
   },
   contractors: {
-    set: () => F.contractors, items: () => contractorPool(), label: v => v, search: true,
-    note: () => "Подрядчик есть там, где он указан в источнике: заказы (встроенный срез и полная детализация «заказ → компонент») и контрагенты УСО. На сводные вкладки (Сводка, Динамика, КТГ × затраты) этот фильтр не действует — там нет такого измерения."
+    set: () => F.contractors, all: true, search: true, items: () => facetItems("contractors"), label: v => v, sub: v => facetMoney("contractors", v),
+    note: () => "Подрядчик есть там, где он указан в источнике: заказы (встроенный срез и полная детализация «заказ → компонент») и контрагенты УСО. На сводные вкладки (Сводка, Динамика, КТГ × затраты) этот фильтр не действует — там нет такого измерения. Рядом с контрагентом — факт УСО по нему в текущем срезе."
   }
 };
-function modelPool() {
-  const s = new Set();
-  (M.ktg || []).forEach(r => { if (!r.md) return; if (F.kcls.size && !F.kcls.has(r.f)) return; if (F.makers.size && !F.makers.has(r.mk)) return; if (F.garages.size && !F.garages.has(r.gn)) return; if (F.sites.size && !F.sites.has(r.s)) return; s.add(r.md); });
-  /* Витрина КТГ знает не более 1 585 единиц из ~10 600 в eoList. Раньше
-     резерв из eoList отключался целиком, как только был выбран
-     производитель, — и модель, которой в КТГ просто нет, невозможно
-     было ни найти, ни выбрать, хотя техника с ней существует.
-     Проверяем производителя через мост M.mkByEo вместо того, чтобы
-     закрывать резерв полностью. */
-  if (!F.kcls.size && !F.garages.size) M.eoList.forEach(r => {
-    if (!r.md) return;
-    if (F.sites.size && !F.sites.has(r.s)) return;
-    if (F.makers.size) { const mk = M.mkByEo.get(eoKey(r.e)); if (!mk || !F.makers.has(mk)) return; }
-    s.add(r.md);
-  });
-  return [...s].sort((a, b) => a.localeCompare(b, "ru"));
-}
-function garagePool() {
-  const s = new Set();
-  (M.ktg || []).forEach(r => {
-    if (!r.gn) return;
-    if (F.sites.size && !F.sites.has(r.s)) return;
-    if (F.kcls.size && !F.kcls.has(r.f)) return;
-    if (F.makers.size && !F.makers.has(r.mk)) return;
-    if (F.models.size && !F.models.has(r.md)) return;
-    s.add(String(r.gn));
-  });
-  return [...s].sort((a, b) => String(a).localeCompare(String(b), "ru", { numeric: true }));
-}
-function contractorPool() {
-  const s = new Set();
-  (M.orders || []).forEach(r => {
-    if (!r.wc) return;
-    if (F.sites.size && !F.sites.has(r.s)) return;
-    s.add(vendor(r.wc));
-  });
-  (M.uso || []).forEach(r => {
-    if (!r.name) return;
-    if (F.sites.size && !F.sites.has(r.s)) return;
-    s.add(vendor(r.name));
-  });
-  return [...s].sort((a, b) => a.localeCompare(b, "ru"));
-}
+/* Живой поиск модели и гаража в шапке сайдбара берёт те же списки, что и
+   сами фильтры, — иначе подсказки предлагали бы то, чего в срезе нет. */
+const modelPool = () => FDEF.models.items();
+const garagePool = () => FDEF.garages.items();
 const FQ = {};
 function buildSidebar() {
+  FSTAT_SEQ++;                       // веса значений пересчитываются под текущий срез
   const act = document.activeElement;
   const keepFocus = act && act.matches && act.matches("input[data-fq]") ? act.getAttribute("data-fq") : null;
   const keepSel = keepFocus ? [act.selectionStart, act.selectionEnd] : null;
@@ -1662,6 +1820,13 @@ function buildSidebar() {
     const def = FDEF[key]; if (!def) return;
     const body = g.querySelector(".fbody");
     const set = def.set();
+    const cnt0 = g.querySelector(".cnt");
+    if (cnt0) cnt0.textContent = set.size ? set.size : "";
+    /* Закрытую секцию не строим: веса значений считаются по витринам (у
+       подгрупп плана закупа это 261 тыс. строк), и делать это для десятка
+       свёрнутых списков на каждый клик по фильтру незачем. Секция
+       наполняется в тот момент, когда её раскрывают. */
+    if (!g.classList.contains("open")) { body.innerHTML = ""; return; }
     const items = def.items();
     let html = "";
     if (def.all) {
@@ -1672,7 +1837,7 @@ function buildSidebar() {
     }
     if (def.search && items.length > 14) html += `<input type="search" class="fsearch" placeholder="поиск…" data-fq="${key}" value="${esc(FQ[key] || "")}">`;
     const q = (FQ[key] || "").toLowerCase();
-    const vis = q ? items.filter(v => String(v).toLowerCase().includes(q)) : items;
+    const vis = q ? items.filter(v => (String(v) + " " + def.label(v)).toLowerCase().includes(q)) : items;
     const cap = 220;
     vis.slice(0, cap).forEach(v => {
       html += `<label class="chk"><input type="checkbox" data-fk="${key}" value="${esc(v)}"${set.has(v) ? " checked" : ""}><span class="txt" title="${esc(def.label(v))}">${esc(def.label(v))}</span>${def.sub ? `<span class="sub">${esc(def.sub(v) || "")}</span>` : ""}</label>`;
@@ -1681,8 +1846,6 @@ function buildSidebar() {
     if (!vis.length) html += `<p class="fnote">Нет значений в текущем срезе.</p>`;
     if (def.note) html += `<p class="fnote">${esc(def.note())}</p>`;
     body.innerHTML = html;
-    const c = g.querySelector(".cnt");
-    c.textContent = set.size ? set.size : "";
   });
   if (aside && keepScroll) aside.scrollTop = keepScroll;
   if (keepFocus) {
@@ -4984,7 +5147,7 @@ function wire() {
   }, 180));
   side.addEventListener("click", e => {
     const h = e.target.closest(".fhead");
-    if (h) { h.parentElement.classList.toggle("open"); return; }
+    if (h) { h.parentElement.classList.toggle("open"); buildSidebar(); return; }
     if (e.target.closest("#btnReset")) {
       [F.sites, F.years, F.methods, F.fleets, F.works, F.capex, F.kcls, F.makers, F.models, F.garages, F.contractors, F.ppz, F.ppzk].forEach(s => s.clear());
       F.mFrom = ""; F.mTo = ""; SEL.eo = null; SEL.order = null; QORD = ""; QMTR = ""; QCAT = "";

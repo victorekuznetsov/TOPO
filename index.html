@@ -410,6 +410,7 @@ body.ready #boot{display:none}
   <div class="fgroup" data-f="fleets"><button class="fhead" type="button"><svg class="caret"><use href="#i-caret"/></svg>Группа МВЗ / парк<span class="cnt"></span></button><div class="fbody"></div></div>
   <div class="fgroup" data-f="works"><button class="fhead" type="button"><svg class="caret"><use href="#i-caret"/></svg>Вид работы ТОРО<span class="cnt"></span></button><div class="fbody"></div></div>
   <div class="fgroup" data-f="capex"><button class="fhead" type="button"><svg class="caret"><use href="#i-caret"/></svg>CAPEX / OPEX<span class="cnt"></span></button><div class="fbody"></div></div>
+  <div class="fgroup" data-f="ppzk"><button class="fhead" type="button"><svg class="caret"><use href="#i-caret"/></svg>ППЗ: ТОиР / не ТОиР<span class="cnt"></span></button><div class="fbody"></div></div>
   <div class="fgroup" data-f="ppz"><button class="fhead" type="button"><svg class="caret"><use href="#i-caret"/></svg>Подгруппа плана закупа<span class="cnt"></span></button><div class="fbody"></div></div>
   <div class="fgroup" data-f="kcls"><button class="fhead" type="button"><svg class="caret"><use href="#i-caret"/></svg>Класс техники (КТГ)<span class="cnt"></span></button><div class="fbody"></div></div>
   <div class="fgroup" data-f="makers"><button class="fhead" type="button"><svg class="caret"><use href="#i-caret"/></svg>Производитель<span class="cnt"></span></button><div class="fbody"></div></div>
@@ -1001,7 +1002,7 @@ const DET_AUTO_CAP = 6;
 const DET_AVG_MB = 7;
 const DET_CACHE_CAP = 10;
 const M = {};
-const F = { sites: new Set(), years: new Set(), methods: new Set(), fleets: new Set(), works: new Set(), capex: new Set(), kcls: new Set(), makers: new Set(), models: new Set(), garages: new Set(), contractors: new Set(), ppz: new Set(), mFrom: "", mTo: "" };
+const F = { sites: new Set(), years: new Set(), methods: new Set(), fleets: new Set(), works: new Set(), capex: new Set(), kcls: new Set(), makers: new Set(), models: new Set(), garages: new Set(), contractors: new Set(), ppz: new Set(), ppzk: new Set(), mFrom: "", mTo: "" };
 const OPT = { merge: true, comparable: false, closed: false, excludeUnassigned: false };
 let TAB = "sum";
 const SEL = { eo: null, order: null, vendor: null };
@@ -1588,6 +1589,13 @@ const FDEF = {
   makers: { set: () => F.makers, items: () => M.ktgMakers || [], label: v => v, search: true },
   models: { set: () => F.models, items: () => modelPool(), label: v => v, search: true },
   garages: { set: () => F.garages, items: () => garagePool(), label: v => v, search: true, all: true },
+  ppzk: {
+    set: () => F.ppzk, items: () => PPZ_KINDS, label: v => v,
+    sub: v => v === PPZK.UNK
+      ? num(Math.max(0, (EKIDX.ek || []).length - PPZ_COVER)) + " позиций"
+      : num(PPZ_LIST.filter(x => ppzKind(x) === v).length) + " подгрупп",
+    note: () => "Деление подгрупп плана закупа на ремонтные и нет — управленческое решение, в справочнике ППЗ такого признака нет. Список «не ТОиР» задан в коде страницы константой PPZ_NON_TOIR и правится руками: сейчас это дизтопливо, реагенты и лабораторная химия, взрывчатые материалы и продукция собственного производства. «ППЗ не определена» — позиции, у которых подгруппы нет ни в одном справочнике; их " + num(PPZ_LIST.length ? ((EKIDX.ek || []).length - PPZ_COVER) : 0) + " в справочнике ЕКМТР, и они не относятся ни к одной стороне. Пока ничего не выбрано, вкладка «Запасы и вовлечение» по-прежнему считает показатели без номенклатуры «не ТОиР», остальные вкладки показывают всё."
+  },
   ppz: {
     set: () => F.ppz, items: () => ppzPool(), label: v => ppzLabel(v), search: true,
     note: () => "Подгруппа плана закупа — свойство позиции номенклатуры, а не заказа. Действует на вкладках «Материалы / ППЗ», «Запасы и вовлечение», «МТР / ЕКМТР» и на составе заказов (вкладки «Заказы» и «Оборудование»). На Сводку, Динамику, КТГ и УСО не влияет: там затраты собраны по заказам, без разреза по номенклатуре. ППЗ известна у " + num(PPZ_COVER) + " из " + num((EKIDX.ek || []).length) + " позиций справочника ЕКМТР — у остальных её нет в источниках, они отбором по ППЗ не отбираются.",
@@ -1674,7 +1682,7 @@ function buildSidebar() {
   const mf = document.getElementById("mfCnt"); if (mf) mf.textContent = n ? "Фильтры · " + n : "Фильтры";
 }
 function countFilters() {
-  return F.sites.size + F.years.size + F.methods.size + F.fleets.size + F.works.size + F.capex.size + F.kcls.size + F.makers.size + F.models.size + F.garages.size + F.contractors.size + F.ppz.size + (F.mFrom ? 1 : 0) + (F.mTo ? 1 : 0);
+  return F.sites.size + F.years.size + F.methods.size + F.fleets.size + F.works.size + F.capex.size + F.kcls.size + F.makers.size + F.models.size + F.garages.size + F.contractors.size + F.ppz.size + F.ppzk.size + (F.mFrom ? 1 : 0) + (F.mTo ? 1 : 0);
 }
 function updatePrintCtx() {
   const el = document.querySelector("main");
@@ -1699,6 +1707,7 @@ function renderChips() {
   add("модель", F.models);
   add("гараж", F.garages);
   add("подрядчик", F.contractors);
+  add("класс ППЗ", F.ppzk);
   add("ППЗ", F.ppz);
   let html = bits.map((b, i) => `<span class="chip"><span>${esc(b.label)}</span><b>${esc(trunc(b.txt, 34))}</b><span class="x" data-chip="${i}" title="Убрать">×</span></span>`).join("");
   html += groups.map((g, i) => `<span class="chip" title="${esc([...g.set].slice(0, 40).join(", "))}"><span>${esc(g.label)}</span><b>${g.n} значений</b><span class="x" data-chipg="${i}" title="Снять весь фильтр">×</span></span>`).join("");
@@ -2800,7 +2809,8 @@ function mtrAggCube() {
   /* Подгруппа плана закупа — свойство материала, поэтому отбор по ней идёт
      здесь, а не в таблице ниже: иначе график по годам считался бы по всей
      номенклатуре, а KPI и таблица — по отобранной. */
-  const okPpz = F.ppz.size ? d.ppz.map(n => F.ppz.has(n)) : null;
+  const okPpz = (F.ppz.size || F.ppzk.size)
+    ? d.ppz.map(n => (!F.ppz.size || F.ppz.has(n)) && passPpzKind(n, false)) : null;
   let rows = 0;
   for (let i = 0; i < d.k.length; i++) {
     const c = d.c[i], cx = c & 3, t = c >> 2, yi = t % NY, si = (t / NY) | 0;
@@ -2839,7 +2849,9 @@ function mtrAggDetail(done) {
       if (F.capex.size) { const b = capexBucket(d.orr && d.orr[d.o[i]]); if (!b || !F.capex.has(b)) continue; }
       const ek = IX.get(d.cek[d.ci[i]]);
       if (ek === undefined) { unknown++; continue; }
-      if (F.ppz.size && !F.ppz.has(d0.ppz[d0.ppzi[ek]] || "")) continue;
+      { const pn = d0.ppz[d0.ppzi[ek]] || "";
+        if (F.ppz.size && !F.ppz.has(pn)) continue;
+        if (!passPpzKind(pn, false)) continue; }
       const p = d.p[i] || 0, a = d.a[i] || 0, qp = d.qp[i] || 0, qf = d.qf[i] || 0;
       P[ek] += p; A[ek] += a; QP[ek] += qp; QF[ek] += qf; N[ek]++;
       const ko = ek + " " + d.o[i]; if (!seenO.has(ko)) { seenO.add(ko); O[ek]++; }
@@ -3239,8 +3251,9 @@ function stkRows() {
       sv, sq, hub: hv, nl: s.nl[i], wh: s.wh[i],
       bv: s.bv[i], bq: s.bq[i], bt: s.bt[i], lt: s.lt[i] < 0 ? null : s.lt[i],
       u12: U12[e], q12: Q12[e], a26: A[e], aAll: AALL[e], p27: P27[e], qp27: QP27[e],
-      tech: e < d.ek.length && stkTech(d.ppzc[d.ppzi[e]]),
-      toir: e < d.ek.length && (AALL[e] > 0 || PALL[e] > 0) && !stkTech(d.ppzc[d.ppzi[e]])
+      tech: e < d.ek.length && ppzKind(d.ppz[d.ppzi[e]]) === PPZK.NON,
+      toir: e < d.ek.length && (AALL[e] > 0 || PALL[e] > 0)
+        && passPpzKind(d.ppz[d.ppzi[e]], true)
         && (!F.ppz.size || F.ppz.has(d.ppz[d.ppzi[e]] || ""))
     });
   }
@@ -3252,8 +3265,8 @@ function stkRows() {
       ix: e, code: d.ek[e], nm: d.nm[e] || "", ppz: d.ppz[d.ppzi[e]] || "",
       sv: 0, sq: 0, hub: 0, nl: 0, wh: 0, bv: 0, bq: 0, bt: 0, lt: null,
       u12: U12[e], q12: Q12[e], a26: A[e], aAll: AALL[e], p27: P27[e], qp27: QP27[e],
-      tech: stkTech(d.ppzc[d.ppzi[e]]),
-      toir: !stkTech(d.ppzc[d.ppzi[e]]) && (!F.ppz.size || F.ppz.has(d.ppz[d.ppzi[e]] || ""))
+      tech: ppzKind(d.ppz[d.ppzi[e]]) === PPZK.NON,
+      toir: passPpzKind(d.ppz[d.ppzi[e]], true) && (!F.ppz.size || F.ppz.has(d.ppz[d.ppzi[e]] || ""))
     });
   }
   rows.forEach(r => {
@@ -3265,19 +3278,6 @@ function stkRows() {
   });
   return { rows };
 }
-
-/* Номенклатура, которая планируется не ремонтом, а технологией: дизтопливо,
-   реагенты и лабораторная химия, взрывчатые материалы, продукция и ТМЦ
-   собственного производства. Через ремонтные заказы по ним проходят
-   единичные списания, а на складе лежат миллиарды — в показателях
-   оборачиваемости ТОиР они дают бессмысленный результат, поэтому
-   исключаются явно и с указанием суммы. */
-const STK_EXCL = ["2.6.1", "2.4", "2.11", "6"];
-const stkTech = ppzCode => {
-  const c = String(ppzCode || "");
-  if (!c) return false;
-  return STK_EXCL.some(p => c === p || c.startsWith(p + "."));
-};
 
 const DOS_BANDS = [
   { l: "менее 90 дней", lo: 0, hi: 90, tone: "b", hint: "Дефицитная зона: при срыве поставки работы встанут" },
@@ -3300,11 +3300,14 @@ PANES.stk = function (host) {
     return;
   }
   const s = STK.data;
+  /* Когда класс ППЗ выбран явно, подписи не должны говорить «ТОиР»:
+     на экране может быть ровно противоположная номенклатура. */
+  const scopeLab = F.ppzk.size === 1 ? [...F.ppzk][0] : "ТОиР";
   const { rows } = stkRows();
   const toir = rows.filter(r => r.toir);
   const stockTO = sum(toir, r => r.sv);
   const stockAll = sum(rows, r => r.sv);
-  const techV = sum(rows.filter(r => r.tech), r => r.sv);
+  const techV = sum(rows.filter(r => r.tech && !r.toir), r => r.sv);
   const hubTO = sum(toir, r => r.hub);
   const use12 = sum(toir, r => r.u12);
   const turn = stockTO ? use12 / stockTO : 0;
@@ -3356,7 +3359,7 @@ PANES.stk = function (host) {
   host.innerHTML =
     callout("info", `Снимок складских остатков BW MM-M03 на <b>${esc(s.asOf)}</b> и открытых закупок на 27.08.2026, сведённые с планом и фактом PM-06 по коду ЕКМТР. Остаток — это состояние на дату, а не оборот за период, поэтому <b>фильтр года на запас не действует</b> (на расход и план — действует). Фильтр площадки действует и на запас; центральный склад АО «РАЗВИТИЕ» показан отдельно, потому что он хранит номенклатуру для всех площадок.`) +
     (F.ppz.size ? callout("info", `Активен фильтр подгрупп плана закупа (${num(F.ppz.size)}) — показатели ниже посчитаны только по отобранной номенклатуре.`) : "") +
-    (stockAll > stockTO ? callout("warn", `Весь складской запас в выгрузке — ${shortR(stockAll)}, в контур ТОиР${F.ppz.size ? " с учётом отбора по ППЗ" : ""} попадает ${shortR(stockTO)}. Вне контура две группы: номенклатура, по которой через ремонтные заказы вообще ничего не проходило (руда, золото, прочие ТМЦ производства), и технологические расходники ${shortR(techV)} — дизтопливо, реагенты, взрывчатые материалы, продукция собственного производства: они планируются технологией, а не ремонтом, и в показателях оборачиваемости ТОиР давали бы бессмыслицу (по дизтопливу — тысячи лет запаса). Ни та, ни другая группа в расчётах ниже не участвует.`) : "") +
+    (stockAll > stockTO ? callout("warn", `Весь складской запас в выгрузке — ${shortR(stockAll)}, в срез «${esc(scopeLab)}»${F.ppz.size ? " с учётом отбора по подгруппам" : ""} попадает ${shortR(stockTO)}. Вне контура две группы: номенклатура, по которой через ремонтные заказы вообще ничего не проходило (руда, золото, прочие ТМЦ производства), и подгруппы плана закупа, отнесённые к «не ТОиР», — ${shortR(techV)}: дизтопливо, реагенты, взрывчатые материалы, продукция собственного производства планируются технологией, а не ремонтом, и в показателях оборачиваемости давали бы бессмыслицу (по дизтопливу — тысячи лет запаса). Состав этой группы задаётся фильтром «ППЗ: ТОиР / не ТОиР» слева${F.ppzk.size ? " и сейчас переопределён вручную" : ""}.`) : "") +
     `<div class="kpis" id="stkKpi"></div>
      <div class="grid g2">
        ${card("Структура запаса по сроку хранения", "дней запаса = 365 × остаток / расход за 12 месяцев", "cStkD", { foot: "Ориентир для запчастей горной техники: 90–180 дней по регулярной номенклатуре и 1–3 года по страховым узлам с длинной поставкой. Всё, что дольше без причины «страховой запас», — замороженные деньги." })}
@@ -3371,10 +3374,10 @@ PANES.stk = function (host) {
      </div>`;
 
   document.getElementById("stkKpi").innerHTML = kpi([
-    { l: "Запас ТОиР", v: shortR(stockTO), s: `${num(toir.filter(r => r.sv > 0).length)} позиций · из них на центральном складе ${short(hubTO)}`, tone: "accent" },
+    { l: "Запас · " + scopeLab, v: shortR(stockTO), s: `${num(toir.filter(r => r.sv > 0).length)} позиций · из них на центральном складе ${short(hubTO)}`, tone: "accent" },
     { l: "Оборачиваемость", v: turn ? turn.toFixed(2) + " об./год" : "—", s: turn ? `срок хранения ${num(365 / turn)} дней · расход 12 мес ${short(use12)}` : "", tone: turn < 1 ? "warn" : "" },
     { l: "Неподвижный запас", v: shortR(sum(dead, r => r.sv)), s: `${num(dead.length)} позиций без единого списания · без движения 12 мес ещё ${short(noMoveV)}`, tone: "warn" },
-    { l: "Запас сверх годовой потребности", v: shortR(excess), s: `${pct(stockTO ? 100 * excess / stockTO : null)} запаса ТОиР`, tone: excess > stockTO * .4 ? "warn" : "" },
+    { l: "Запас сверх годовой потребности", v: shortR(excess), s: `${pct(stockTO ? 100 * excess / stockTO : null)} запаса в срезе`, tone: excess > stockTO * .4 ? "warn" : "" },
     { l: "Вовлечение в план 2027", v: pct(p27 ? 100 * coverV / p27 : null), s: `${shortR(coverV)} из ${short(p27)} плана уже лежит на складах`, tone: "accent" },
     { l: "Закупка поверх запаса", v: shortR(sum(overbuy, r => r.bv)), s: `${num(overbuy.length)} позиций: заявка открыта, а запаса больше года расхода или расхода нет вовсе`, tone: "warn" }
   ]);
@@ -3759,15 +3762,59 @@ function buildPpzIndex() {
     if (!PPZBYC.has(cs[i])) PPZBYC.set(cs[i], n);
   }
 }
+/* ------------------------------------------------------------------
+   ОТНЕСЕНИЕ ПОДГРУПП ПЛАНА ЗАКУПА К ТОиР — правится руками.
+
+   Это управленческое решение, а не свойство данных: в справочнике ППЗ
+   такого признака нет. Здесь перечислено то, что планируется технологией
+   и производством, а не ремонтом, и поэтому в показателях ТОиР даёт
+   бессмыслицу (по дизтопливу выходили тысячи лет запаса).
+
+   Правило кода посегментное: "2.6.1" отбирает 2.6.1 и 2.6.1.x, но НЕ
+   2.6.10 «Антифриз» и НЕ 2.6.11 «Автохимия» — это расходники ремонта.
+   Подгруппы, у которых кода ППЗ нет, вписывайте в names точным
+   наименованием, как оно показано в фильтре.
+   ------------------------------------------------------------------ */
+const PPZ_NON_TOIR = {
+  codes: [
+    "2.6.1",   // дизельное топливо
+    "2.4",     // реагенты, лабораторная химия, стандартные образцы
+    "2.11",    // взрывчатые материалы
+    "6"        // продукция и ТМЦ собственного производства (руда, золото, вскрыша)
+  ],
+  names: []    // подгруппы без кода ППЗ — точным наименованием
+};
+const PPZK = { TO: "ТОиР", NON: "не ТОиР", UNK: "ППЗ не определена" };
+const PPZ_KINDS = [PPZK.TO, PPZK.NON, PPZK.UNK];
+/* Класс подгруппы по её наименованию — так же, как она приходит в фильтр. */
+function ppzKind(name) {
+  const n = String(name || "");
+  if (!n) return PPZK.UNK;
+  const c = PPZ_CODE.get(n) || "";
+  if (c ? PPZ_NON_TOIR.codes.some(x => c === x || c.startsWith(x + "."))
+        : PPZ_NON_TOIR.names.indexOf(n) >= 0) return PPZK.NON;
+  return PPZK.TO;
+}
+/* Пропускать ли материал по фильтру «ППЗ ТОиР / не ТОиР».
+   Пустой фильтр — поведение по умолчанию, и оно у вкладок разное: на
+   «Запасах» номенклатура вне ТОиР в показателях оборачиваемости не
+   участвует, на остальных вкладках показывается всё. Явный выбор в
+   фильтре всегда сильнее умолчания. */
+function passPpzKind(name, dropNonToir) {
+  const k = ppzKind(name);
+  if (F.ppzk.size) return F.ppzk.has(k);
+  return !(dropNonToir && k === PPZK.NON);
+}
 const ppzOfName = c => PPZBYC.get(String(c || "")) || "";
 const ppzOfCode = k => PPZBYEK.get(String(k || "")) || "";
 const ppzLabel = v => v;
-function ppzPool() { return PPZ_LIST; }
+function ppzPool() { return F.ppzk.size ? PPZ_LIST.filter(n => F.ppzk.has(ppzKind(n))) : PPZ_LIST; }
 /* Проверка строки компонента: код известен точнее имени, поэтому сперва он. */
 function passPpz(code, name) {
-  if (!F.ppz.size) return true;
+  if (!F.ppz.size && !F.ppzk.size) return true;
   const p = (code && ppzOfCode(code)) || ppzOfName(name);
-  return !!p && F.ppz.has(p);
+  if (F.ppz.size && !(p && F.ppz.has(p))) return false;
+  return passPpzKind(p, false);
 }
 const CATCACHE = { q: null, set: null };
 function compsForCatalog(q) {
@@ -4860,7 +4907,7 @@ function saveState() {
     sessionStorage.setItem(STATE_KEY, JSON.stringify({
       sites: [...F.sites], years: [...F.years], methods: [...F.methods], fleets: [...F.fleets],
       works: [...F.works], capex: [...F.capex], kcls: [...F.kcls], makers: [...F.makers], models: [...F.models], garages: [...F.garages],
-      contractors: [...F.contractors], ppz: [...F.ppz],
+      contractors: [...F.contractors], ppz: [...F.ppz], ppzk: [...F.ppzk],
       mFrom: F.mFrom, mTo: F.mTo, opt: { ...OPT }, tab: TAB
     }));
   } catch (e) { /* приватный режим/квота — не критично */ }
@@ -4875,7 +4922,7 @@ function loadState() {
     fill(F.years, s.years, new Set(M.years));
     fill(F.methods, s.methods, new Set(M.methods));
     fill(F.fleets, s.fleets); fill(F.works, s.works); fill(F.capex, s.capex); fill(F.kcls, s.kcls);
-    fill(F.makers, s.makers); fill(F.models, s.models); fill(F.garages, s.garages); fill(F.contractors, s.contractors); fill(F.ppz, s.ppz);
+    fill(F.makers, s.makers); fill(F.models, s.models); fill(F.garages, s.garages); fill(F.contractors, s.contractors); fill(F.ppz, s.ppz); fill(F.ppzk, s.ppzk, new Set(PPZ_KINDS));
     F.mFrom = s.mFrom || ""; F.mTo = s.mTo || "";
     if (s.opt) Object.assign(OPT, s.opt);
     if (s.tab && PANES[s.tab] && !location.hash) TAB = s.tab;
@@ -4923,7 +4970,7 @@ function wire() {
     const h = e.target.closest(".fhead");
     if (h) { h.parentElement.classList.toggle("open"); return; }
     if (e.target.closest("#btnReset")) {
-      [F.sites, F.years, F.methods, F.fleets, F.works, F.capex, F.kcls, F.makers, F.models, F.garages, F.contractors, F.ppz].forEach(s => s.clear());
+      [F.sites, F.years, F.methods, F.fleets, F.works, F.capex, F.kcls, F.makers, F.models, F.garages, F.contractors, F.ppz, F.ppzk].forEach(s => s.clear());
       F.mFrom = ""; F.mTo = ""; SEL.eo = null; SEL.order = null; QORD = ""; QMTR = ""; QCAT = "";
       Object.keys(FQ).forEach(k => FQ[k] = "");
       const a = document.getElementById("mFrom"), b = document.getElementById("mTo");

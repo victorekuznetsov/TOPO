@@ -2212,6 +2212,10 @@ PANES.dyn = function (host) {
        ${card("Структура по годам", "доля МТР и УСО в плане", "cShare")}
      </div>
      <div class="grid g2">
+       ${card("CAPEX / OPEX по годам", "доля CAPEX и OPEX в плане — тот же признак, что на вкладке «CAPEX / OPEX»", "cShareCx", { foot: "Собран отдельно от основной витрины и не имеет базис-месяца, поэтому фильтр «Период» на этот график не влияет; площадка/год/способ/парк/вид работы — влияют." })}
+       ${card("Доля CAPEX в плане по годам", "тот же контур, что и график слева", "cShareCxPct")}
+     </div>
+     <div class="grid g2">
        ${card("Год к году", "сопоставимый контур площадок", "tYoY", { tools: dlBtn("tYoY"), foot: "Прирост считается только между годами с одинаковым составом площадок; несопоставимые пары помечены." })}
        ${card("Крупнейшие отклонения факт − план", "закрытые и текущие годы", "tDev", { tools: dlBtn("tDev") })}
      </div>
@@ -2276,6 +2280,32 @@ PANES.dyn = function (host) {
       { name: "План МТР", color: "var(--c1)", data: ys.map(y => (gy.get(y) || {}).p || 0) },
       { name: "План УСО", color: "var(--c3)", data: ys.map(y => (gy.get(y) || {}).up || 0) }
     ]
+  });
+
+  /* --- CAPEX/OPEX по годам: тот же признак «Причина инвестиций», что и
+     на вкладке «CAPEX / OPEX» — capex.json собран отдельно от основной
+     витрины (без базис-месяца), фильтруем тем же passCapexScope. --- */
+  const cxByYear = new Map(ys.map(y => [y, { CAPEX: 0, OPEX: 0 }]));
+  (M.capex || []).forEach(r => {
+    if (!passCapexScope(r)) return;
+    const b = capexBucket(r.r);
+    if (!b) return;
+    const x = cxByYear.get(String(r.y));
+    if (x) x[b] += (r.p || 0) + (r.up || 0);
+  });
+  CHART.bars(host.querySelector("#cShareCx"), {
+    height: 240, stacked: true, labels: ys, valueFmt: short,
+    series: [
+      { name: "План CAPEX", color: "var(--c1)", data: ys.map(y => cxByYear.get(y).CAPEX) },
+      { name: "План OPEX", color: "var(--c3)", data: ys.map(y => cxByYear.get(y).OPEX) }
+    ]
+  });
+  CHART.line(host.querySelector("#cShareCxPct"), {
+    height: 240, labels: ys, valueFmt: v => NF0.format(v) + "%", min: 0, max: 100,
+    series: [{
+      name: "Доля CAPEX", color: "var(--c1)", width: 2.4,
+      data: ys.map(y => { const x = cxByYear.get(y); const t = x.CAPEX + x.OPEX; return t ? +(100 * x.CAPEX / t).toFixed(1) : null; })
+    }]
   });
 
   /* --- год к году --- */

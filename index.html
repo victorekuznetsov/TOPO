@@ -469,6 +469,7 @@ body.ready #boot{display:none}
     <button data-t="stk" role="tab">Запасы и вовлечение</button>
     <button data-t="rep" role="tab">Выводы</button>
     <button data-t="eo" role="tab">Оборудование</button>
+    <button data-t="todr" role="tab">ТО DR75</button>
     <button data-t="vmz" role="tab">Внутренние ВМЗ</button>
     <button data-t="ord" role="tab">Заказы</button>
     <button data-t="cmp" role="tab">Сравнение планов</button>
@@ -4343,6 +4344,224 @@ PANES.eo = function (host) {
   });
 };
 
+/* ---------- ТО DR75 (пилот план-факта по ТО; логика точечная под одну
+   модель — при переносе на весь парк обобщить DR75_RE/DR75_SITE в фильтр
+   по модели из сайдбара). Методика — общепринятая практика ТОиР/EAM:
+   1) сравнение факта не с «сырым» планом СЭП, а с эталонным комплектом
+      работы (аналог job plan / BOM в SAP PM) — набором позиций, которые
+      реально встречаются в большинстве исполненных работ этого уровня;
+   2) плановая стоимость считается не по цене из заявки (она у СЭП часто
+      расходится с реальной закупкой — см. записку «ТО DR75 на 2027 год»),
+      а по последней фактической цене списания той же позиции — так
+      сравнение план/факт показывает отклonение по количеству и составу,
+      а не путается с устаревшей или ошибочной ценой заявки;
+   3) отклонение раскладывается на объём и заполнение эталона, а не только
+      в рубль — так видно, чего не хватило, а не только «дороже/дешевле». */
+const DR75_SITE = "1200";
+const DR75_RE = /DR-?75/i;
+const TO_LEVEL_RE = /^Техническое обслуживание/;
+const TO_LEVELS = ["Техническое обслуживание 1", "Техническое обслуживание 2", "Техническое обслуживание 3", "Техническое обслуживание 4", "Техническое обслуживание 5"];
+const TO_THRESH = { 1: 40, 2: 45, 3: 35, 4: 100, 5: 60 };
+function dr75Combos() {
+  return (ORDIDX.combos || []).filter(k => k.indexOf(DR75_SITE + "_") === 0).map(k => ({ s: DR75_SITE, y: k.slice(DR75_SITE.length + 1), key: k }));
+}
+function dr75EnsureLoaded() { ensureDetailLoaded(dr75Combos()); }
+/* Строки компонентов ТО DR75 из уже загруженной полной детализации —
+   пересчитывается на каждый рендер вкладки, набор мал (тысячи строк). */
+function dr75Rows() {
+  const rows = [];
+  loadedDetails(dr75Combos()).forEach(entry => {
+    const d = entry.data;
+    if (!d) return;
+    for (let i = 0; i < d.n; i++) {
+      const e = d.e[d.ei[i]];
+      if (!DR75_RE.test(e || "")) continue;
+      const w = d.w[d.wi[i]];
+      if (!TO_LEVEL_RE.test(w || "")) continue;
+      const ci = d.ci[i], o = d.o[i];
+      const od = d.od && d.od[o];
+      rows.push({
+        y: entry.y, o, e, w, c: d.c[ci], ek: (d.cek && d.cek[ci]) || "",
+        qp: d.qp[i] || 0, qf: d.qf[i] || 0, p: d.p[i] || 0, a: d.a[i] || 0,
+        bs: od ? od[0] : null
+      });
+    }
+  });
+  return rows;
+}
+/* Последняя фактическая цена списания по позиции — по дате начала заказа
+   среди строк с реальным расходом (qf>0, a>0). */
+function dr75LastPrices(rows) {
+  const m = new Map();
+  rows.forEach(r => {
+    if (!(r.qf > 0) || !(r.a > 0) || !r.bs) return;
+    const key = r.ek || r.c;
+    const cur = m.get(key);
+    if (!cur || r.bs > cur.date) m.set(key, { price: r.a / r.qf, date: r.bs, o: r.o });
+  });
+  return m;
+}
+function dr75Median(arr) { const s = arr.slice().sort((a, b) => a - b); const n = s.length; return n % 2 ? s[(n - 1) / 2] : (s[n / 2 - 1] + s[n / 2]) / 2; }
+/* Эталонный комплект по уровням — накопительно, как в записках по DR75:
+   позиция входит в уровень N, если встречается не реже порога TO_THRESH[N]
+   среди заказов этого уровня, где есть подтверждённый факт, и ещё не вошла
+   в комплект более младшего уровня. */
+function dr75Kit(rows) {
+  const byOrder = new Map();
+  rows.forEach(r => {
+    let x = byOrder.get(r.o);
+    if (!x) byOrder.set(r.o, x = { o: r.o, e: r.e, w: r.w, y: r.y, bs: r.bs, lines: [], hasFact: false });
+    x.lines.push(r);
+    if (r.qf > 0) x.hasFact = true;
+  });
+  const orders = [...byOrder.values()];
+  let cumulative = [];
+  const cumKeys = new Set();
+  const out = {};
+  TO_LEVELS.forEach((lvl, idx) => {
+    const n = idx + 1;
+    const ordsAtLevel = orders.filter(o => o.w === lvl && o.hasFact);
+    const nOrders = ordsAtLevel.length;
+    const byMat = new Map();
+    ordsAtLevel.forEach(o => o.lines.forEach(r => {
+      if (!(r.qf > 0)) return;
+      const key = r.ek || r.c;
+      let m = byMat.get(key);
+      if (!m) byMat.set(key, { ek: r.ek, name: r.c, qtys: [], orders: new Set() });
+      m = byMat.get(key);
+      m.qtys.push(r.qf); m.orders.add(r.o);
+    }));
+    const items = [...byMat.values()].map(m => ({ ek: m.ek, name: m.name, freq: m.orders.size, freqPct: nOrders ? 100 * m.orders.size / nOrders : 0, medQty: dr75Median(m.qtys) }));
+    const th = TO_THRESH[n] || 40;
+    const additions = items.filter(it => it.freqPct >= th && !cumKeys.has(it.ek || it.name)).sort((a, b) => b.freqPct - a.freqPct);
+    additions.forEach(it => cumKeys.add(it.ek || it.name));
+    cumulative = cumulative.concat(additions);
+    out[lvl] = { level: n, nOrders, additions, cumulative: cumulative.slice() };
+  });
+  return out;
+}
+/* Медианный интервал между заказами одного уровня — на весь парк DR75. */
+function dr75Intervals(rows) {
+  const byOrder = new Map();
+  rows.forEach(r => { if (!byOrder.has(r.o)) byOrder.set(r.o, { e: r.e, w: r.w, bs: r.bs }); });
+  const byKey = new Map();
+  byOrder.forEach(x => { if (!x.bs) return; const k = x.e + " " + x.w; if (!byKey.has(k)) byKey.set(k, []); byKey.get(k).push(x.bs); });
+  const out = {};
+  TO_LEVELS.forEach(lvl => {
+    const diffs = [];
+    byKey.forEach((arr, k) => { if (!k.endsWith(" " + lvl)) return; const s = arr.slice().sort(); for (let i = 1; i < s.length; i++) diffs.push((new Date(s[i]) - new Date(s[i - 1])) / 86400000); });
+    out[lvl] = diffs.length ? dr75Median(diffs) : null;
+  });
+  return out;
+}
+PANES.todr = function (host) {
+  dr75EnsureLoaded();
+  const combos = dr75Combos();
+  const details = loadedDetails(combos);
+  const loading = details.length < combos.length;
+  if (!combos.length) { host.innerHTML = callout("bad", "Указатель заказов (order_idx.json) не загружен — полная детализация недоступна."); return; }
+
+  const rows = dr75Rows();
+  if (loading && !rows.length) {
+    host.innerHTML = callout("info", `Загружается полная детализация по площадке 1200 (${combos.length} файлов) — вкладка обновится сама, как только данные придут.`);
+    return;
+  }
+  if (!rows.length) { host.innerHTML = callout("bad", "В загруженной детализации не нашлось строк ТО по DR75 — проверьте, что файлы data/1200_*.json на месте."); return; }
+
+  const prices = dr75LastPrices(rows);
+  const kit = dr75Kit(rows);
+  const intervals = dr75Intervals(rows);
+  const priceOf = key => { const x = prices.get(key); return x ? x.price : null; };
+
+  /* --- заказы: план по последним факт-ценам против факта --- */
+  const byOrder = new Map();
+  rows.forEach(r => {
+    let x = byOrder.get(r.o);
+    if (!x) byOrder.set(r.o, x = { o: r.o, e: r.e, w: r.w, y: r.y, bs: r.bs, lines: [], planRaw: 0, fact: 0, hasFact: false, priced: 0, noPriceQty: 0 });
+    x.lines.push(r);
+    x.planRaw += r.p || 0;
+    x.fact += r.a || 0;
+    if (r.qf > 0) x.hasFact = true;
+    const up = priceOf(r.ek || r.c);
+    if (r.qp > 0) { if (up != null) x.priced += r.qp * up; else x.noPriceQty += r.qp; }
+  });
+  const orderRows = [...byOrder.values()].map(x => {
+    const lvl = kit[x.w];
+    let fillN = 0, fillTot = lvl ? lvl.cumulative.length : 0;
+    if (lvl && x.hasFact) {
+      const have = new Set(x.lines.filter(r => r.qf > 0).map(r => r.ek || r.c));
+      fillN = lvl.cumulative.filter(it => have.has(it.ek || it.name)).length;
+    }
+    return {
+      o: x.o, e: x.e.replace(/^Станок буровой /, ""), lvl: "ТО-" + (lvl ? lvl.level : "?"), y: x.y, bs: x.bs,
+      status: x.hasFact ? "исполнен" : "план",
+      planned: x.priced, noPriceQty: x.noPriceQty, fact: x.fact,
+      dev: x.hasFact ? x.fact - x.priced : null,
+      devPct: x.hasFact && x.priced ? 100 * (x.fact - x.priced) / x.priced : null,
+      fill: x.hasFact ? (fillTot ? 100 * fillN / fillTot : null) : null, fillN, fillTot
+    };
+  }).sort((a, b) => String(b.bs || "").localeCompare(String(a.bs || "")));
+
+  const executed = orderRows.filter(r => r.status === "исполнен");
+  const fillVals = executed.map(r => r.fill).filter(v => v != null);
+  const avgFill = fillVals.length ? fillVals.reduce((s, v) => s + v, 0) / fillVals.length : null;
+  const totPlanPriced = sum(executed, r => r.planned), totFact = sum(executed, r => r.fact);
+  const devPctTotal = totPlanPriced ? 100 * (totFact - totPlanPriced) / totPlanPriced : null;
+  const noPriceOrders = orderRows.filter(r => r.noPriceQty > 0).length;
+  const kitTotal = kit["Техническое обслуживание 5"] ? kit["Техническое обслуживание 5"].cumulative.length : 0;
+
+  host.innerHTML =
+    callout("info", `Пилот по одной модели: разбор пяти уровней ТО станка DR75 (площадка 1200, ${num(combos.length)} годовых файлов) — методика описана ниже, дальше та же логика ляжет на весь парк техники. Плановая стоимость заказа здесь — не цена из заявки, а плановое количество, умноженное на <b>последнюю фактическую цену списания</b> той же позиции: так отклонение показывает разницу в объёме и составе, а не в цене заявки (у неё, как показано в записке «ТО DR75 на 2027 год», случаются расхождения в разы).`) +
+    `<div class="kpis" id="drKpi"></div>
+     <div class="grid">${card("Эталонный комплект по уровням", "накопительно от ТО-1 до ТО-5, порог включения — доля исполненных заказов уровня, где встретилась позиция", "tDrKit", { tools: dlBtn("tDrKit") })}</div>
+     <div class="grid">${card("Заказы ТО DR75: план (по последним факт-ценам) против факта", "клик по заголовку — сортировка; «план» — заказы года 2027 без исполнения", "tDrOrd", { tools: dlBtn("tDrOrd") })}</div>`;
+
+  document.getElementById("drKpi").innerHTML = kpi([
+    { l: "Заказов ТО в контуре", v: num(orderRows.length), s: `${num(executed.length)} исполнено · ${num(orderRows.length - executed.length)} план`, tone: "accent" },
+    { l: "Заполнение эталона", v: avgFill == null ? "—" : pct(avgFill), s: "в среднем по исполненным заказам", tone: avgFill == null ? "" : avgFill >= 80 ? "good" : avgFill >= 50 ? "warn" : "bad" },
+    { l: "План (посл. цены) vs факт", v: devPctTotal == null ? "—" : deltaTag(devPctTotal, "%"), s: `${shortR(totPlanPriced)} → ${shortR(totFact)}`, tone: devPctTotal == null ? "" : Math.abs(devPctTotal) <= 15 ? "good" : "warn" },
+    { l: "Позиций в полном комплекте", v: num(kitTotal), s: "накопительно к ТО-5" },
+    { l: "Заказов без цены на позицию", v: num(noPriceOrders), s: "в справочнике нет ни одного факт-списания", tone: noPriceOrders ? "warn" : "good" }
+  ]);
+
+  const kitRows = [];
+  TO_LEVELS.forEach(lvl => {
+    const k = kit[lvl];
+    k.additions.forEach(it => {
+      const up = priceOf(it.ek || it.name);
+      kitRows.push({ lvl: "ТО-" + k.level, name: it.name, ek: it.ek, freqPct: it.freqPct, medQty: it.medQty, price: up, lineCost: up != null ? up * it.medQty : null, interval: intervals[lvl] });
+    });
+  });
+  tableView(host.querySelector("#tDrKit"), {
+    id: "tDrKit", sort: "lvl", dir: 1, rows: kitRows, maxH: 460,
+    cols: [
+      { k: "lvl", t: "Уровень", cls: "dim" },
+      { k: "name", t: "Позиция", cls: "name" },
+      { k: "ek", t: "№ ЕКМТР", cls: "dim" },
+      { k: "freqPct", t: "Частота", n: true, fmt: v => pct(v) },
+      { k: "medQty", t: "Кол-во", n: true, fmt: v => NF2.format(v) },
+      { k: "price", t: "Посл. факт-цена", n: true, fmt: v => v == null ? "нет списаний" : shortR(v) },
+      { k: "lineCost", t: "Сумма", n: true, fmt: v => v == null ? "—" : shortR(v) },
+      { k: "interval", t: "Медианный интервал уровня", n: true, fmt: v => v == null ? "—" : days(Math.round(v)) }
+    ]
+  });
+
+  tableView(host.querySelector("#tDrOrd"), {
+    id: "tDrOrd", sort: "bs", dir: 1, rows: orderRows, maxH: 520,
+    cols: [
+      { k: "bs", t: "Дата", cls: "dim", fmt: v => dateRu(v) },
+      { k: "e", t: "Единица", cls: "name" },
+      { k: "lvl", t: "Уровень" },
+      { k: "o", t: "Заказ", cls: "dim" },
+      { k: "status", t: "Статус", fmt: v => `<span class="tag ${v === "исполнен" ? "g" : "n"}">${esc(v)}</span>` },
+      { k: "planned", t: "План (посл. цены)", n: true, fmt: v => shortR(v) },
+      { k: "fact", t: "Факт", n: true, fmt: v => shortR(v) },
+      { k: "devPct", t: "Отклонение", n: true, fmt: v => v == null ? "—" : deltaTag(v, "%") },
+      { k: "fill", t: "Заполнение эталона", n: true, fmt: (v, r) => v == null ? "—" : `${pct(v)} (${r.fillN}/${r.fillTot})` }
+    ]
+  });
+};
+
 /* ---------- Внутренние ВМЗ ---------- */
 const VMZ_HOZ_METHODS = new Set(["Хозспособ", "Комбинированный"]);
 PANES.vmz = function (host) {
@@ -4466,8 +4685,8 @@ function ensureDetailLoaded(combos) {
     if (D.dets.has(c.key)) return;
     const entry = { key: c.key, s: c.s, y: c.y, data: null, err: null, loading: true };
     D.dets.set(c.key, entry);
-    const done = d => { entry.data = d; entry.loading = false; if (TAB === "ord" || TAB === "eo" || TAB === "mat") renderTab(); };
-    const fail = e => { entry.err = String(e && e.message || e); entry.loading = false; if (TAB === "ord" || TAB === "eo" || TAB === "mat") renderTab(); };
+    const done = d => { entry.data = d; entry.loading = false; if (TAB === "ord" || TAB === "eo" || TAB === "mat" || TAB === "todr") renderTab(); };
+    const fail = e => { entry.err = String(e && e.message || e); entry.loading = false; if (TAB === "ord" || TAB === "eo" || TAB === "mat" || TAB === "todr") renderTab(); };
     if (IS_FILE_PROTO) {
       loadLocalScript("det_" + c.key, "data/" + c.key + ".local.js").then(done).catch(fail);
     } else {

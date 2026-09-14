@@ -433,6 +433,7 @@ body.ready #boot{display:none}
   <div class="fgroup" data-f="fleets"><button class="fhead" type="button"><svg class="caret"><use href="#i-caret"/></svg>Группа МВЗ / парк<span class="cnt"></span></button><div class="fbody"></div></div>
   <div class="fgroup" data-f="works"><button class="fhead" type="button"><svg class="caret"><use href="#i-caret"/></svg>Вид работы ТОРО<span class="cnt"></span></button><div class="fbody"></div></div>
   <div class="fgroup" data-f="capex"><button class="fhead" type="button"><svg class="caret"><use href="#i-caret"/></svg>CAPEX / OPEX<span class="cnt"></span></button><div class="fbody"></div></div>
+  <div class="fgroup" data-f="capexReason"><button class="fhead" type="button"><svg class="caret"><use href="#i-caret"/></svg>Статья CAPEX / OPEX<span class="cnt"></span></button><div class="fbody"></div></div>
   <div class="fgroup" data-f="ppzk"><button class="fhead" type="button"><svg class="caret"><use href="#i-caret"/></svg>ППЗ: ТОиР / не ТОиР<span class="cnt"></span></button><div class="fbody"></div></div>
   <div class="fgroup" data-f="ppz"><button class="fhead" type="button"><svg class="caret"><use href="#i-caret"/></svg>Подгруппа плана закупа<span class="cnt"></span></button><div class="fbody"></div></div>
   <div class="fgroup" data-f="kcls"><button class="fhead" type="button"><svg class="caret"><use href="#i-caret"/></svg>Класс техники (КТГ)<span class="cnt"></span></button><div class="fbody"></div></div>
@@ -1034,7 +1035,7 @@ const DET_AUTO_CAP = 6;
 const DET_AVG_MB = 7;
 const DET_CACHE_CAP = 10;
 const M = {};
-const F = { sites: new Set(), years: new Set(), methods: new Set(), fleets: new Set(), works: new Set(), capex: new Set(), kcls: new Set(), makers: new Set(), models: new Set(), garages: new Set(), contractors: new Set(), ppz: new Set(), ppzk: new Set(), mFrom: "", mTo: "" };
+const F = { sites: new Set(), years: new Set(), methods: new Set(), fleets: new Set(), works: new Set(), capex: new Set(), capexReason: new Set(), kcls: new Set(), makers: new Set(), models: new Set(), garages: new Set(), contractors: new Set(), ppz: new Set(), ppzk: new Set(), mFrom: "", mTo: "" };
 const OPT = { merge: true, comparable: false, closed: false, excludeUnassigned: false };
 let TAB = "sum";
 const SEL = { eo: null, order: null, vendor: null };
@@ -1445,6 +1446,7 @@ function passCapex(r) {
   const b = capexBucket(r.r);
   if (!b) return false;
   if (F.capex.size && !F.capex.has(b)) return false;
+  if (F.capexReason.size && !F.capexReason.has(String(r.r || "").trim())) return false;
   return true;
 }
 function passCombo(r) {
@@ -1706,6 +1708,31 @@ function capexFacet() {
   }
   return m;
 }
+/* Статьи CAPEX/OPEX — та же витрина M.capex, детализация до конкретной
+   причины (сужена выбранным бакетом CAPEX/OPEX, как ППЗ сужена классом
+   ТОиР/не ТОиР). Список — в порядке исходной таблицы, не по величине. */
+function capexReasonPool() {
+  const all = capexReasonOrder().filter(r => capexBucket(r));
+  return F.capex.size ? all.filter(r => F.capex.has(capexBucket(r))) : all;
+}
+function capexReasonFacet() {
+  const fl = allowedFleetSet();
+  const m = new Map();
+  for (const r of (M.capex || [])) {
+    if (F.sites.size && !F.sites.has(r.s)) continue;
+    if (!YS.has(String(r.y))) continue;
+    if (F.methods.size && !F.methods.has(r.u)) continue;
+    if (F.fleets.size && !F.fleets.has(r.f)) continue;
+    if (F.works.size && !F.works.has(r.w)) continue;
+    if (fl && !fl.has(r.f)) continue;
+    const rname = String(r.r || "").trim();
+    const b = capexBucket(rname);
+    if (!b) continue;
+    if (F.capex.size && !F.capex.has(b)) continue;
+    m.set(rname, (m.get(rname) || 0) + (r.p || 0) + (r.up || 0));
+  }
+  return m;
+}
 
 /* Измерения техники — из справочника КТГ, вес — число единиц оборудования.
    Год к этим спискам НЕ применяется: класс, производитель, модель и
@@ -1801,6 +1828,7 @@ function facetStat(key) {
   if (FSTAT.map.has(key)) return FSTAT.map.get(key);
   let m;
   if (key === "capex") m = capexFacet();
+  else if (key === "capexReason") m = capexReasonFacet();
   else if (key === "contractors") m = contractorFacet();
   else if (key === "ppz") m = ppzFacet();
   else if (key === "kcls" || key === "makers" || key === "models" || key === "garages") m = ktgFacet(key);
@@ -1842,7 +1870,14 @@ const FDEF = {
   works: { set: () => F.works, all: true, search: true, items: () => facetItems("works"), label: v => v, sub: v => facetMoney("works", v) },
   capex: {
     set: () => F.capex, all: true, items: () => ["CAPEX", "OPEX"], label: v => v, sub: v => facetMoney("capex", v),
-    note: () => "Признак SAP «Причина инвестиций» — собран отдельно от основной витрины, без разреза по базис-месяцу и по единице оборудования. Действует на вкладке «CAPEX / OPEX» и на вкладках «Заказы»/«Оборудование», когда там загружена полная детализация «заказ → компонент» (там причина известна по заказу). На Сводку, Динамику и остальные сводные вкладки не влияет — там этого измерения нет."
+    note: () => "Признак SAP «Причина инвестиций» — собран отдельно от основной витрины, без разреза по базис-месяцу и по единице оборудования. Действует на вкладке «CAPEX / OPEX», на графике «CAPEX / OPEX по годам» вкладки «Динамика», на вкладках «Материалы / ЕКМТР» и «Запасы и вовлечение» (там материал, а не заказ), и на вкладках «Заказы»/«Оборудование», когда там загружена полная детализация «заказ → компонент». На Сводку, КТГ и остальные вкладки, собранные по заказам без причины инвестиций, не влияет."
+  },
+  capexReason: {
+    set: () => F.capexReason, all: true,
+    items: () => { const idx = new Map(capexReasonOrder().map((r, i) => [r, i])); return facetItems("capexReason", (a, b) => (idx.get(a) ?? 999) - (idx.get(b) ?? 999)); },
+    label: v => v, sub: v => facetMoney("capexReason", v),
+    note: () => (F.capex.size ? "Список сужен фильтром «CAPEX / OPEX» — показаны только статьи выбранного бакета (" + num(capexReasonPool().length) + " из " + num(capexReasonOrder().filter(r => capexBucket(r)).length) + "). " : "") +
+      "Детализация признака «Причина инвестиций» до конкретной статьи, в порядке исходной таблицы. Действует там же, где есть сама причина по строке — «CAPEX / OPEX», график «Динамики» и полная детализация «заказ → компонент» на «Заказах»/«Оборудовании» (там причина известна по заказу). На «Материалы / ЕКМТР» и «Запасы и вовлечение» НЕ влияет — там причина сжата на этапе сборки витрины до CAPEX/OPEX, статья не сохранена; используйте фильтр «CAPEX / OPEX» выше."
   },
   ppzk: {
     set: () => F.ppzk, items: () => PPZ_KINDS, label: v => v, all: true,
@@ -1929,7 +1964,7 @@ function buildSidebar() {
   const mf = document.getElementById("mfCnt"); if (mf) mf.textContent = n ? "Фильтры · " + n : "Фильтры";
 }
 function countFilters() {
-  return F.sites.size + F.years.size + F.methods.size + F.fleets.size + F.works.size + F.capex.size + F.kcls.size + F.makers.size + F.models.size + F.garages.size + F.contractors.size + F.ppz.size + F.ppzk.size + (F.mFrom ? 1 : 0) + (F.mTo ? 1 : 0);
+  return F.sites.size + F.years.size + F.methods.size + F.fleets.size + F.works.size + F.capex.size + F.capexReason.size + F.kcls.size + F.makers.size + F.models.size + F.garages.size + F.contractors.size + F.ppz.size + F.ppzk.size + (F.mFrom ? 1 : 0) + (F.mTo ? 1 : 0);
 }
 function updatePrintCtx() {
   const el = document.querySelector("main");
@@ -1949,6 +1984,7 @@ function renderChips() {
   add("парк", F.fleets);
   add("работа", F.works);
   add("CAPEX/OPEX", F.capex);
+  add("статья CAPEX/OPEX", F.capexReason);
   add("класс", F.kcls);
   add("производитель", F.makers);
   add("модель", F.models);
@@ -2298,13 +2334,15 @@ PANES.dyn = function (host) {
      — capex.json собран отдельно от основной витрины (без базис-месяца),
      фильтруем тем же passCapexScope. «Не присвоено»/«ОВП» не относятся
      ни к CAPEX, ни к OPEX (см. вкладку «CAPEX / OPEX») — не показываем. */
-  const reasonOrder = capexReasonOrder().filter(r => capexBucket(r));
+  const reasonOrder = capexReasonPool();
   const cxByYearReason = new Map(ys.map(y => [y, new Map(reasonOrder.map(r => [r, 0]))]));
   const cxByYearBucket = new Map(ys.map(y => [y, { CAPEX: 0, OPEX: 0 }]));
   (M.capex || []).forEach(r => {
     if (!passCapexScope(r)) return;
     const rname = String(r.r || "").trim(), b = capexBucket(rname);
     if (!b) return;
+    if (F.capex.size && !F.capex.has(b)) return;
+    if (F.capexReason.size && !F.capexReason.has(rname)) return;
     const v = (r.p || 0) + (r.up || 0);
     const byReason = cxByYearReason.get(String(r.y));
     if (byReason) byReason.set(rname, (byReason.get(rname) || 0) + v);
@@ -2433,7 +2471,13 @@ function linkRows() {
 const CAPEX_COLOR = { "CAPEX": "var(--c4)", "OPEX": "var(--c1)" };
 PANES.capex = function (host) {
   const scoped = (M.capex || []).filter(passCapexScope);
-  const src = scoped.filter(r => { const b = capexBucket(r.r); return b && (!F.capex.size || F.capex.has(b)); });
+  const src = scoped.filter(r => {
+    const b = capexBucket(r.r);
+    if (!b) return false;
+    if (F.capex.size && !F.capex.has(b)) return false;
+    if (F.capexReason.size && !F.capexReason.has(String(r.r || "").trim())) return false;
+    return true;
+  });
 
   const tot = { CAPEX: { p: 0, a: 0, up: 0, uf: 0 }, OPEX: { p: 0, a: 0, up: 0, uf: 0 } };
   src.forEach(r => { const t = tot[capexBucket(r.r)]; t.p += r.p || 0; t.a += r.a || 0; t.up += r.up || 0; t.uf += r.uf || 0; });
@@ -2465,6 +2509,7 @@ PANES.capex = function (host) {
   scoped.forEach(r => {
     const bucket = capexBucket(r.r);
     if (bucket && F.capex.size && !F.capex.has(bucket)) return;
+    if (F.capexReason.size && !F.capexReason.has(String(r.r || "").trim())) return;
     let x = byReason.get(r.r); if (!x) byReason.set(r.r, x = { r: r.r, bucket, tp: 0, ta: 0 });
     x.tp += (r.p || 0) + (r.up || 0); x.ta += (r.a || 0) + (r.uf || 0);
   });
@@ -3141,7 +3186,12 @@ function mtrAggDetail(done) {
       if (keys && !keys.has(eoKey(e))) continue;
       if (F.fleets.size) { const fl = M.eoFleet.get(eoKey(e)); if (fl && !F.fleets.has(fl)) continue; }
       if (F.contractors.size) { const wc = (d.wc && d.wci) ? vendor(d.wc[d.wci[i]]) : ""; if (!F.contractors.has(wc)) continue; }
-      if (F.capex.size) { const b = capexBucket(d.orr && d.orr[d.o[i]]); if (!b || !F.capex.has(b)) continue; }
+      if (F.capex.size || F.capexReason.size) {
+        const rname = String((d.orr && d.orr[d.o[i]]) || "").trim(), b = capexBucket(rname);
+        if (!b) continue;
+        if (F.capex.size && !F.capex.has(b)) continue;
+        if (F.capexReason.size && !F.capexReason.has(rname)) continue;
+      }
       const ek = IX.get(d.cek[d.ci[i]]);
       if (ek === undefined) { unknown++; continue; }
       { const pn = d0.ppz[d0.ppzi[ek]] || "";
@@ -4145,7 +4195,8 @@ PANES.doc = function (host) {
       { f: "Площадка, Год", w: "Везде", n: "Основные измерения витрины: есть в каждом срезе." },
       { f: "Период (базис-месяц)", w: "Сводка, Динамика, CAPEX", n: "Месяц — реквизит заказа, а не строки. Там, где витрина без месяца, фильтр не действует." },
       { f: "Способ, Вид работы, Парк", w: "Везде, кроме КТГ", n: "Признаки заказа. В справочнике КТГ их нет." },
-      { f: "CAPEX / OPEX", w: "CAPEX, Заказы, Оборудование, Материалы, Запасы", n: "Причина инвестиций известна по заказу; на сводных вкладках этого измерения нет." },
+      { f: "CAPEX / OPEX", w: "CAPEX, Динамика (график по годам), Заказы, Оборудование, Материалы, Запасы", n: "Причина инвестиций известна по заказу или по материалу; на большинстве сводных вкладок этого измерения нет." },
+      { f: "Статья CAPEX / OPEX", w: "CAPEX, Динамика (график по годам), Заказы, Оборудование", n: "Детализация до конкретной причины, а не бакета. На Материалы и Запасы не влияет — там причина сжата до CAPEX/OPEX на этапе сборки витрины, статья не хранится; действует только более грубый фильтр CAPEX/OPEX выше." },
       { f: "Класс, Производитель, Модель, Гараж", w: "Везде, где есть единица оборудования", n: "Атрибуты техники. В витрины без ЕО переводятся через набор допустимых парков." },
       { f: "Подрядчик", w: "Заказы, Оборудование, УСО", n: "Указан на операции заказа. На Сводку и Динамику не влияет." },
       { f: "ППЗ и класс ППЗ", w: "Материалы, Запасы, МТР, состав заказов", n: "Свойство позиции номенклатуры. Затраты на сводных вкладках собраны по заказам, без разреза по номенклатуре." }
@@ -4226,9 +4277,11 @@ PANES.eo = function (host) {
           if (F.works.size && !F.works.has(w2)) continue;
           const wc = (d.wc && d.wci) ? vendor(d.wc[d.wci[i]]) : "";
           if (F.contractors.size && !F.contractors.has(wc)) continue;
-          if (F.capex.size) {
-            const bucket = capexBucket(d.orr && d.orr[o]);
-            if (!bucket || !F.capex.has(bucket)) continue;
+          if (F.capex.size || F.capexReason.size) {
+            const rname = String((d.orr && d.orr[o]) || "").trim(), bucket = capexBucket(rname);
+            if (!bucket) continue;
+            if (F.capex.size && !F.capex.has(bucket)) continue;
+            if (F.capexReason.size && !F.capexReason.has(rname)) continue;
           }
           if (F.ppz.size && !passPpz((d.cek && d.cek[d.ci[i]]) || "", d.c[d.ci[i]])) continue;
           let x = map.get(o);
@@ -4620,9 +4673,11 @@ PANES.ord = function (host) {
         if (F.fleets.size) { const fl = M.eoFleet.get(eoKey(e)); if (fl && !F.fleets.has(fl)) continue; }
         const wc = (d.wc && d.wci) ? vendor(d.wc[d.wci[i]]) : "";
         if (F.contractors.size && !F.contractors.has(wc)) continue;
-        if (F.capex.size) {
-          const bucket = capexBucket(d.orr && d.orr[o]);
-          if (!bucket || !F.capex.has(bucket)) continue;
+        if (F.capex.size || F.capexReason.size) {
+          const rname = String((d.orr && d.orr[o]) || "").trim(), bucket = capexBucket(rname);
+          if (!bucket) continue;
+          if (F.capex.size && !F.capex.has(bucket)) continue;
+          if (F.capexReason.size && !F.capexReason.has(rname)) continue;
         }
         if (q && !((o + " " + e + " " + c).toLowerCase().includes(q))) continue;
         /* Подгруппа плана закупа — свойство позиции, поэтому она отсекает
@@ -5410,6 +5465,7 @@ function refresh() {
      подгруппах вне нового класса пришлось бы снимать руками, а до тех пор
      срез был бы пустым — снимаем их сами. */
   if (F.ppzk.size) [...F.ppz].forEach(n => { if (!F.ppzk.has(ppzKind(n))) F.ppz.delete(n); });
+  if (F.capex.size) [...F.capexReason].forEach(n => { if (!F.capex.has(capexBucket(n))) F.capexReason.delete(n); });
   YS = activeYears();
   computeBase();
   buildSidebar();
@@ -5624,7 +5680,7 @@ function saveState() {
   try {
     sessionStorage.setItem(STATE_KEY, JSON.stringify({
       sites: [...F.sites], years: [...F.years], methods: [...F.methods], fleets: [...F.fleets],
-      works: [...F.works], capex: [...F.capex], kcls: [...F.kcls], makers: [...F.makers], models: [...F.models], garages: [...F.garages],
+      works: [...F.works], capex: [...F.capex], capexReason: [...F.capexReason], kcls: [...F.kcls], makers: [...F.makers], models: [...F.models], garages: [...F.garages],
       contractors: [...F.contractors], ppz: [...F.ppz], ppzk: [...F.ppzk],
       mFrom: F.mFrom, mTo: F.mTo, opt: { ...OPT }, tab: TAB
     }));
@@ -5639,7 +5695,7 @@ function loadState() {
     fill(F.sites, s.sites, new Set(Object.keys(M.sites)));
     fill(F.years, s.years, new Set(M.years));
     fill(F.methods, s.methods, new Set(M.methods));
-    fill(F.fleets, s.fleets); fill(F.works, s.works); fill(F.capex, s.capex); fill(F.kcls, s.kcls);
+    fill(F.fleets, s.fleets); fill(F.works, s.works); fill(F.capex, s.capex); fill(F.capexReason, s.capexReason); fill(F.kcls, s.kcls);
     fill(F.makers, s.makers); fill(F.models, s.models); fill(F.garages, s.garages); fill(F.contractors, s.contractors); fill(F.ppz, s.ppz); fill(F.ppzk, s.ppzk, new Set(PPZ_KINDS));
     F.mFrom = s.mFrom || ""; F.mTo = s.mTo || "";
     if (s.opt) Object.assign(OPT, s.opt);
@@ -5688,7 +5744,7 @@ function wire() {
     const h = e.target.closest(".fhead");
     if (h) { h.parentElement.classList.toggle("open"); buildSidebar(); return; }
     if (e.target.closest("#btnReset")) {
-      [F.sites, F.years, F.methods, F.fleets, F.works, F.capex, F.kcls, F.makers, F.models, F.garages, F.contractors, F.ppz, F.ppzk].forEach(s => s.clear());
+      [F.sites, F.years, F.methods, F.fleets, F.works, F.capex, F.capexReason, F.kcls, F.makers, F.models, F.garages, F.contractors, F.ppz, F.ppzk].forEach(s => s.clear());
       F.mFrom = ""; F.mTo = ""; SEL.eo = null; SEL.order = null; QORD = ""; QMTR = ""; QCAT = "";
       Object.keys(FQ).forEach(k => FQ[k] = "");
       const a = document.getElementById("mFrom"), b = document.getElementById("mTo");

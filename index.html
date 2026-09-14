@@ -1421,6 +1421,17 @@ function capexBucket(reason) {
   if (/^opex/i.test(s)) return "OPEX";
   return null;
 }
+/* Естественный порядок статей — по первому появлению в capex.json, то
+   есть как причины идут в исходной выгрузке, а не отсортированные по
+   величине. capex.json собран построчным чтением 23 исходных файлов —
+   порядок стабилен между перезагрузками одних и тех же данных. */
+let CAPEX_ORDER_CACHE = null;
+function capexReasonOrder() {
+  if (CAPEX_ORDER_CACHE) return CAPEX_ORDER_CACHE;
+  const seen = [], has = new Set();
+  (M.capex || []).forEach(r => { const s = String(r.r || "").trim(); if (s && !has.has(s)) { has.add(s); seen.push(s); } });
+  return (CAPEX_ORDER_CACHE = seen);
+}
 function passCapexScope(r) {
   if (F.sites.size && !F.sites.has(r.s)) return false;
   if (!YS.has(String(r.y))) return false;
@@ -2212,8 +2223,8 @@ PANES.dyn = function (host) {
        ${card("Структура по годам", "доля МТР и УСО в плане", "cShare")}
      </div>
      <div class="grid g2">
-       ${card("CAPEX / OPEX по годам", "доля CAPEX и OPEX в плане — тот же признак, что на вкладке «CAPEX / OPEX»", "cShareCx", { foot: "Собран отдельно от основной витрины и не имеет базис-месяца, поэтому фильтр «Период» на этот график не влияет; площадка/год/способ/парк/вид работы — влияют." })}
-       ${card("Доля CAPEX в плане по годам", "тот же контур, что и график слева", "cShareCxPct")}
+       ${card("CAPEX / OPEX по годам", "по статьям причины инвестиций, в порядке исходной таблицы (не по величине)", "cShareCx", { foot: "Собран отдельно от основной витрины и не имеет базис-месяца, поэтому фильтр «Период» на этот график не влияет; площадка/год/способ/парк/вид работы — влияют. «Не присвоено»/«ОВП» не входят ни в CAPEX, ни в OPEX — не показаны." })}
+       ${card("Доля CAPEX в плане по годам", "сумма статей CAPEX к сумме статей CAPEX+OPEX, тот же контур, что и график слева", "cShareCxPct")}
      </div>
      <div class="grid g2">
        ${card("Год к году", "сопоставимый контур площадок", "tYoY", { tools: dlBtn("tYoY"), foot: "Прирост считается только между годами с одинаковым составом площадок; несопоставимые пары помечены." })}
@@ -2282,29 +2293,37 @@ PANES.dyn = function (host) {
     ]
   });
 
-  /* --- CAPEX/OPEX по годам: тот же признак «Причина инвестиций», что и
-     на вкладке «CAPEX / OPEX» — capex.json собран отдельно от основной
-     витрины (без базис-месяца), фильтруем тем же passCapexScope. --- */
-  const cxByYear = new Map(ys.map(y => [y, { CAPEX: 0, OPEX: 0 }]));
+  /* --- CAPEX/OPEX по годам, по статьям в порядке исходной таблицы:
+     тот же признак «Причина инвестиций», что и на вкладке «CAPEX / OPEX»
+     — capex.json собран отдельно от основной витрины (без базис-месяца),
+     фильтруем тем же passCapexScope. «Не присвоено»/«ОВП» не относятся
+     ни к CAPEX, ни к OPEX (см. вкладку «CAPEX / OPEX») — не показываем. */
+  const reasonOrder = capexReasonOrder().filter(r => capexBucket(r));
+  const cxByYearReason = new Map(ys.map(y => [y, new Map(reasonOrder.map(r => [r, 0]))]));
+  const cxByYearBucket = new Map(ys.map(y => [y, { CAPEX: 0, OPEX: 0 }]));
   (M.capex || []).forEach(r => {
     if (!passCapexScope(r)) return;
-    const b = capexBucket(r.r);
+    const rname = String(r.r || "").trim(), b = capexBucket(rname);
     if (!b) return;
-    const x = cxByYear.get(String(r.y));
-    if (x) x[b] += (r.p || 0) + (r.up || 0);
+    const v = (r.p || 0) + (r.up || 0);
+    const byReason = cxByYearReason.get(String(r.y));
+    if (byReason) byReason.set(rname, (byReason.get(rname) || 0) + v);
+    const byBucket = cxByYearBucket.get(String(r.y));
+    if (byBucket) byBucket[b] += v;
   });
+  const CX_PALETTE = ["var(--c1)", "var(--c5)", "var(--c2)", "var(--c7)", "var(--c6)", "var(--c8)", "var(--c4)", "var(--c3)"];
   CHART.bars(host.querySelector("#cShareCx"), {
-    height: 240, stacked: true, labels: ys, valueFmt: short,
-    series: [
-      { name: "План CAPEX", color: "var(--c1)", data: ys.map(y => cxByYear.get(y).CAPEX) },
-      { name: "План OPEX", color: "var(--c3)", data: ys.map(y => cxByYear.get(y).OPEX) }
-    ]
+    height: 260, stacked: true, labels: ys, valueFmt: short,
+    series: reasonOrder.map((rname, i) => ({
+      name: rname, color: CX_PALETTE[i % CX_PALETTE.length],
+      data: ys.map(y => cxByYearReason.get(y).get(rname) || 0)
+    }))
   });
   CHART.line(host.querySelector("#cShareCxPct"), {
-    height: 240, labels: ys, valueFmt: v => NF0.format(v) + "%", min: 0, max: 100,
+    height: 260, labels: ys, valueFmt: v => NF0.format(v) + "%", min: 0, max: 100,
     series: [{
       name: "Доля CAPEX", color: "var(--c1)", width: 2.4,
-      data: ys.map(y => { const x = cxByYear.get(y); const t = x.CAPEX + x.OPEX; return t ? +(100 * x.CAPEX / t).toFixed(1) : null; })
+      data: ys.map(y => { const x = cxByYearBucket.get(y); const t = x.CAPEX + x.OPEX; return t ? +(100 * x.CAPEX / t).toFixed(1) : null; })
     }]
   });
 
@@ -2449,7 +2468,9 @@ PANES.capex = function (host) {
     let x = byReason.get(r.r); if (!x) byReason.set(r.r, x = { r: r.r, bucket, tp: 0, ta: 0 });
     x.tp += (r.p || 0) + (r.up || 0); x.ta += (r.a || 0) + (r.uf || 0);
   });
-  const rrows = [...byReason.values()].filter(x => x.tp || x.ta).sort((a, b) => b.tp - a.tp)
+  const reasonOrderIdx = new Map(capexReasonOrder().map((r, i) => [r, i]));
+  const rrows = [...byReason.values()].filter(x => x.tp || x.ta)
+    .sort((a, b) => (reasonOrderIdx.has(a.r) ? reasonOrderIdx.get(a.r) : 999) - (reasonOrderIdx.has(b.r) ? reasonOrderIdx.get(b.r) : 999))
     .map(x => ({ ...x, exec: x.tp ? 100 * x.ta / x.tp : null }));
   const exclP = sum(rrows.filter(x => !x.bucket), x => x.tp);
 
@@ -2462,7 +2483,7 @@ PANES.capex = function (host) {
        ${card("Доля CAPEX в плане", "по текущему срезу", "cCpxDonut")}
      </div>
      <div class="grid">${card("CAPEX и OPEX по площадкам", "факт, ₽", "cCpxSite")}</div>
-     <div class="grid">${card("Причина инвестиций", "план, факт и исполнение по каждому значению признака", "tCpxWork", { tools: dlBtn("tCpxWork") })}</div>`;
+     <div class="grid">${card("Причина инвестиций", "план, факт и исполнение по каждому значению признака — в порядке исходной таблицы", "tCpxWork", { tools: dlBtn("tCpxWork") })}</div>`;
 
   document.getElementById("capexKpi").innerHTML = kpi([
     { l: "План CAPEX", v: shortR(capexTp), s: pct(capexShareP) + " плана вкладки", tone: "accent" },
@@ -2495,7 +2516,7 @@ PANES.capex = function (host) {
     ]
   });
   tableView(host.querySelector("#tCpxWork"), {
-    id: "tCpxWork", sort: "tp", rows: rrows, bar: "tp", maxH: 400,
+    id: "tCpxWork", rows: rrows, bar: "tp", maxH: 400,
     cols: [
       { k: "r", t: "Причина инвестиций", cls: "name" },
       { k: "bucket", t: "Классификация", fmt: v => v ? `<span class="tag ${v === "CAPEX" ? "g" : ""}">${esc(v)}</span>` : `<span class="tag n">не учитывается</span>` },

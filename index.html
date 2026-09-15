@@ -4527,6 +4527,19 @@ PANES.todr = function (host) {
   const kitRows = [];
   TO_LEVELS.forEach(lvl => {
     const k = kit[lvl];
+    if (!k.additions.length) {
+      /* Уровень без своих новых позиций — обычно значит, что при малой
+         выборке (порог TO_THRESH ужесточается вплоть до 100%) все
+         позиции, встретившиеся в подтверждённых заказах, уже вошли в
+         комплект более младшего уровня. Показываем это строкой, а не
+         молчанием — иначе уровень выглядит пропавшим из данных. */
+      kitRows.push({
+        lvl: "ТО-" + k.level, empty: true,
+        name: `— новых позиций не набралось (${num(k.nOrders)} ${plural(k.nOrders, "заказ", "заказа", "заказов")} с фактом, порог ${TO_THRESH[k.level]}%): весь состав этих заказов уже покрыт комплектом младших уровней`,
+        ek: "", freqPct: null, medQty: null, price: null, lineCost: null, interval: intervals[lvl]
+      });
+      return;
+    }
     k.additions.forEach(it => {
       const up = priceOf(it.ek || it.name);
       kitRows.push({ lvl: "ТО-" + k.level, name: it.name, ek: it.ek, freqPct: it.freqPct, medQty: it.medQty, price: up, lineCost: up != null ? up * it.medQty : null, interval: intervals[lvl] });
@@ -4536,11 +4549,11 @@ PANES.todr = function (host) {
     id: "tDrKit", sort: "lvl", dir: 1, rows: kitRows, maxH: 460,
     cols: [
       { k: "lvl", t: "Уровень", cls: "dim" },
-      { k: "name", t: "Позиция", cls: "name" },
+      { k: "name", t: "Позиция", cls: "name", fmt: (v, r) => r.empty ? `<span class="dim">${esc(v)}</span>` : esc(v) },
       { k: "ek", t: "№ ЕКМТР", cls: "dim" },
       { k: "freqPct", t: "Частота", n: true, fmt: v => pct(v) },
-      { k: "medQty", t: "Кол-во", n: true, fmt: v => NF2.format(v) },
-      { k: "price", t: "Посл. факт-цена", n: true, fmt: v => v == null ? "нет списаний" : shortR(v) },
+      { k: "medQty", t: "Кол-во", n: true, fmt: v => v == null ? "—" : NF2.format(v) },
+      { k: "price", t: "Посл. факт-цена", n: true, fmt: (v, r) => v != null ? shortR(v) : r.empty ? "—" : "нет списаний" },
       { k: "lineCost", t: "Сумма", n: true, fmt: v => v == null ? "—" : shortR(v) },
       { k: "interval", t: "Медианный интервал уровня", n: true, fmt: v => v == null ? "—" : days(Math.round(v)) }
     ]

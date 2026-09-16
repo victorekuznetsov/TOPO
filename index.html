@@ -467,6 +467,7 @@ body.ready #boot{display:none}
     <button data-t="mtr" role="tab">МТР / ЕКМТР</button>
     <button data-t="mat" role="tab">Материалы / ППЗ</button>
     <button data-t="stk" role="tab">Запасы и вовлечение</button>
+    <button data-t="prov" role="tab">Обеспеченность заказов</button>
     <button data-t="rep" role="tab">Выводы</button>
     <button data-t="eo" role="tab">Оборудование</button>
     <button data-t="todr" role="tab">ТО DR75</button>
@@ -3549,7 +3550,7 @@ function stkEnsure() {
 }
 /* Вкладки, которые ждут витрину материалов и снимок запасов: после
    загрузки перерисовываем ту, что открыта сейчас. */
-const DATA_TABS = ["mat", "stk", "rep"];
+const DATA_TABS = ["mat", "stk", "rep", "prov"];
 function stkLoad() {
   if (STK.state === "ready" && MTRU.state === "ready") return;
   const done = () => { if (DATA_TABS.indexOf(TAB) >= 0) renderTab(); };
@@ -3805,6 +3806,240 @@ PANES.stk = function (host) {
     const n = document.getElementById("qStk");
     if (n) { n.focus(); n.setSelectionRange(n.value.length, n.value.length); }
   }, 260);
+};
+
+/* ---------- Обеспеченность будущих заказов ТОРО ---------- */
+/* Распределение обеспеченности запасом по ещё не исполненным заказам —
+   не «сколько плана 2027 в сумме закрывается остатком» (это уже есть на
+   вкладке «Запасы и вовлечение»), а «какая доля состава закрыта складом
+   у КАЖДОГО отдельного будущего заказа» — распределение, а не одна
+   агрегатная цифра. Общепринятая практика MRP/ATP: доступный остаток —
+   общий ресурс на несколько заявок сразу, поэтому один и тот же остаток
+   нельзя засчитать в обеспеченность двух заказов одновременно. Здесь он
+   распределяется («pegging») между заказами по датам начала — раньше
+   срок, раньше очередь на остаток; кто не поместился — тому дефицит.
+
+   Упрощение: пул остатка — по всей номенклатуре сразу (все площадки +
+   центральный склад), без деления по конкретной площадке заказа. В
+   снимке остатков нет остатка по площадкам в количестве — только в
+   деньгах (см. «Запасы и вовлечение»), делить количество по площадкам
+   пришлось бы через ту же денежную пропорцию, что добавило бы мнимую
+   точность, а не убрало допущение. Это явно оговорено в тексте вкладки. */
+const PROV_BANDS = [
+  { l: "0% — нет ни одной позиции на складе", test: v => v === 0, tone: "b" },
+  { l: "1–49%", test: v => v > 0 && v < 50, tone: "b" },
+  { l: "50–79%", test: v => v >= 50 && v < 80, tone: "w" },
+  { l: "80–99%", test: v => v >= 80 && v < 100, tone: "w" },
+  { l: "100% — обеспечен полностью", test: v => v >= 100, tone: "g" }
+];
+function provStockIx() {
+  const d = MTRU.data, s = STK.data;
+  const ix = new Map(MTRU.ix);
+  (s.ek2 || []).forEach((c, j) => { if (!ix.has(c)) ix.set(c, d.ek.length + j); });
+  return ix;
+}
+function provStockOf(ix, key) {
+  const e = ix.get(key);
+  if (e == null) return null;
+  const i = STK.byIx.get(e);
+  if (i == null) return null;
+  return { qty: STK.data.sq[i] || 0, val: STK.data.sv[i] || 0 };
+}
+/* Заказы без единого факта (ни одной строки qf>0) — то, что ещё
+   предстоит выполнить; тот же признак «план», что и на вкладке «ТО
+   DR75», но здесь без привязки к модели — по всему срезу фильтров. */
+function provBuild(done) {
+  const keys = allowedEoKeys();
+  const byOrder = new Map();
+  done.forEach(entry => {
+    const d = entry.data;
+    for (let i = 0; i < d.n; i++) {
+      const u = d.u[i], w2 = d.w[d.wi[i]], e = d.e[d.ei[i]], c = d.c[d.ci[i]], o = d.o[i];
+      if (F.methods.size && !F.methods.has(u) && !(F.methods.has("Хозспособ") && u === "ХС") && !(F.methods.has("Комбинированный") && u === "Комб")) continue;
+      if (F.works.size && !F.works.has(w2)) continue;
+      if (keys && !keys.has(eoKey(e))) continue;
+      if (F.fleets.size) { const fl = M.eoFleet.get(eoKey(e)); if (fl && !F.fleets.has(fl)) continue; }
+      const wc = (d.wc && d.wci) ? vendor(d.wc[d.wci[i]]) : "";
+      if (F.contractors.size && !F.contractors.has(wc)) continue;
+      if (F.capex.size || F.capexReason.size) {
+        const rname = String((d.orr && d.orr[o]) || "").trim(), bucket = capexBucket(rname);
+        if (!bucket) continue;
+        if (F.capex.size && !F.capex.has(bucket)) continue;
+        if (F.capexReason.size && !F.capexReason.has(rname)) continue;
+      }
+      const ci = d.ci[i];
+      const ek = (d.cek && d.cek[ci]) || "";
+      if (F.ppz.size && !passPpz(ek, c)) continue;
+      let x = byOrder.get(o);
+      if (!x) {
+        const od = d.od && d.od[o];
+        x = { o, e, w: w2, site: entry.s, bs: od ? od[0] : null, be: od ? od[1] : null, lines: [], hasFact: false };
+        byOrder.set(o, x);
+      }
+      const qp = d.qp[i] || 0, qf = d.qf[i] || 0, p = d.p[i] || 0;
+      if (qf > 0) x.hasFact = true;
+      if (qp > 0) x.lines.push({ ek, c, qp, p });
+      if (e) x.e = e;
+    }
+  });
+  const orders = [...byOrder.values()].filter(x => !x.hasFact && x.lines.length);
+  orders.forEach(x => {
+    const byPos = new Map();
+    x.lines.forEach(r => {
+      const key = r.ek || r.c;
+      let m = byPos.get(key);
+      if (!m) byPos.set(key, m = { key, ek: r.ek, name: r.c, qp: 0, p: 0 });
+      m.qp += r.qp; m.p += r.p;
+    });
+    x.pos = [...byPos.values()];
+    delete x.lines;
+  });
+  return orders;
+}
+/* Распределение остатка по позициям: внутри одного № ЕКМТР — по датам
+   начала заказа (раньше срок — раньше очередь), пока остаток не
+   закончится. Попутно копится дефицит по позиции для второй таблицы. */
+function provAllocate(orders, ix) {
+  const byKey = new Map();
+  orders.forEach(o => o.pos.forEach(pos => {
+    if (!pos.ek) { pos.alloc = 0; pos.noCode = true; return; }
+    if (!byKey.has(pos.ek)) byKey.set(pos.ek, []);
+    byKey.get(pos.ek).push({ o, pos });
+  }));
+  const posAgg = [];
+  byKey.forEach((list, key) => {
+    const stock = provStockOf(ix, key) || { qty: 0, val: 0 };
+    let running = stock.qty;
+    list.sort((a, b) => { const da = a.o.bs || "9999-99-99", db = b.o.bs || "9999-99-99"; return da < db ? -1 : da > db ? 1 : 0; });
+    let needQty = 0;
+    list.forEach(r => {
+      needQty += r.pos.qp;
+      const alloc = Math.min(r.pos.qp, Math.max(0, running));
+      r.pos.alloc = alloc;
+      running -= alloc;
+    });
+    posAgg.push({
+      ek: key, name: list[0].pos.name, needQty, stockQty: stock.qty,
+      deficitQty: Math.max(0, needQty - stock.qty),
+      needV: sum(list, r => r.pos.p),
+      nOrders: new Set(list.map(r => r.o.o)).size
+    });
+  });
+  posAgg.forEach(r => {
+    const unit = r.needQty ? r.needV / r.needQty : 0;
+    r.deficitV = r.deficitQty * unit;
+  });
+  orders.forEach(o => {
+    o.nPos = o.pos.length;
+    o.nCoveredPos = o.pos.filter(p => p.qp > 0 && (p.alloc || 0) >= p.qp - 1e-9).length;
+    o.posCoveragePct = o.nPos ? 100 * o.nCoveredPos / o.nPos : null;
+    o.needV = sum(o.pos, p => p.p);
+    o.covV = sum(o.pos, p => { const u = p.qp > 0 ? p.p / p.qp : 0; return (p.alloc || 0) * u; });
+    o.valCoveragePct = o.needV ? 100 * o.covV / o.needV : null;
+    o.noCodeN = o.pos.filter(p => p.noCode).length;
+  });
+  return posAgg;
+}
+PANES.prov = function (host) {
+  if (STK.state !== "ready" || MTRU.state !== "ready") stkLoad();
+  if (STK.state === "err" || MTRU.state === "err") {
+    host.innerHTML = callout("bad", `Не удалось загрузить данные запасов (${esc(STK.err || MTRU.err)}).`);
+    return;
+  }
+  if (STK.state !== "ready" || MTRU.state !== "ready") {
+    host.innerHTML = callout("info", "Загружается витрина материалов и снимок складских остатков…");
+    return;
+  }
+  const w = wantedDetail();
+  const combos = w.combos;
+  const dets = loadedDetails(combos);
+  const done = dets.filter(e => e.data);
+  const loading = dets.filter(e => e.loading);
+  const errs = dets.filter(e => e.err);
+  if (!combos.length) {
+    host.innerHTML = callout("info", `Полная детализация «заказ → компонент» хранится файлами по площадке и году. Отметьте хотя бы одну площадку слева (или сузьте годы), чтобы её подгрузить — без неё не из чего собрать состав будущих заказов.`);
+    return;
+  }
+  if (w.tooMany && !DET_FORCE) {
+    const mb = Math.round(combos.length * DET_AVG_MB);
+    host.innerHTML = callout("warn", `Текущему фильтру соответствует ${num(combos.length)} файлов полной детализации (~${mb} МБ). Автозагрузка отключена. <button type="button" class="minibtn" id="btnLoadDet">Загрузить полную детализацию (~${mb} МБ)</button> — или сузьте площадки/годы слева.`);
+    return;
+  }
+  if (loading.length) { host.innerHTML = callout("info", `Загружается полная детализация: ${num(done.length)} из ${num(combos.length)} файлов готово…`); return; }
+  if (!done.length) { host.innerHTML = errs.length ? callout("bad", `Не удалось загрузить детализацию (${errs.map(e => esc(e.err)).join("; ")}).`) : callout("info", "Нет загруженных данных."); return; }
+
+  const ix = provStockIx();
+  const orders = provBuild(done);
+  const posAgg = provAllocate(orders, ix);
+
+  if (!orders.length) {
+    host.innerHTML = callout("good", `В текущем срезе нет ещё не исполненных заказов ТОиР (ни одной строки без факта) — обеспеченность оценивать не по чему. Проверьте фильтр годов слева: раздел рассчитан в первую очередь на план будущего периода.`);
+    return;
+  }
+
+  const totalNeedV = sum(orders, o => o.needV), totalCovV = sum(orders, o => o.covV);
+  const zeroOrders = orders.filter(o => o.posCoveragePct === 0);
+  const fullOrders = orders.filter(o => o.posCoveragePct === 100);
+  const noCodeOrders = orders.filter(o => o.noCodeN > 0);
+  const bands = PROV_BANDS.map(b => {
+    const g = orders.filter(o => b.test(o.posCoveragePct));
+    return { ...b, n: g.length, v: sum(g, o => o.needV) };
+  });
+
+  host.innerHTML =
+    callout("info", `Заказы без единого подтверждённого факта (план, ещё не исполнен) — ${num(orders.length)} шт. по текущему фильтру слева. Остаток одной и той же позиции нельзя засчитать в обеспеченность сразу двух заказов: он распределён между ними по датам начала заказа (раньше срок — раньше очередь на остаток), как в MRP/ATP-логике. Пул остатка — по всей номенклатуре сразу (все площадки + центральный склад), без деления по площадке заказа, — см. методику под таблицами.`) +
+    (noCodeOrders.length ? callout("warn", `У ${num(noCodeOrders.length)} заказов хотя бы одна позиция без номера ЕКМТР в источнике — сверить с остатком нельзя, доля покрытых позиций у них занижена не по вине заказа, а из-за пробела в справочнике.`) : "") +
+    `<div class="kpis" id="provKpi"></div>
+     <div class="grid">${card("Распределение обеспеченности по заказам", "доля позиций заказа, полностью закрытых пегированным остатком — не деньгами, а составом", "cProvD", { foot: "0% — под заказ нет вообще ничего на складе; 100% — весь состав уже лежит и может быть выдан без закупки." })}</div>
+     <div class="grid">${card("Будущие заказы ТОиР", "клик по заголовку — сортировка; по умолчанию — ближе всех по сроку", "tProvOrd", { tools: dlBtn("tProvOrd") })}</div>
+     <div class="grid">${card("Дефицитные позиции", "какие именно позиции чаще всего не хватает на складе — сумма по всем будущим заказам сразу", "tProvPos", { tools: dlBtn("tProvPos") })}</div>`;
+
+  document.getElementById("provKpi").innerHTML = kpi([
+    { l: "Будущих заказов", v: num(orders.length), s: "ни одной строки факта — план", tone: "accent" },
+    { l: "Медиана обеспеченности", v: pct(dr75Median(orders.map(o => o.posCoveragePct))), s: "доля позиций заказа, закрытых остатком" },
+    { l: "Полностью обеспечены", v: num(fullOrders.length), s: `${pct(100 * fullOrders.length / orders.length)} заказов · ${shortR(sum(fullOrders, o => o.needV))} плана`, tone: "good" },
+    { l: "Совсем нет остатка", v: num(zeroOrders.length), s: `${pct(100 * zeroOrders.length / orders.length)} заказов · ${shortR(sum(zeroOrders, o => o.needV))} плана — закупка целиком`, tone: zeroOrders.length ? "warn" : "" },
+    { l: "Закрыто остатком, ₽", v: shortR(totalCovV), s: `из ${shortR(totalNeedV)} потребности плана — ${pct(totalNeedV ? 100 * totalCovV / totalNeedV : null)}`, tone: "accent" },
+    { l: "Дефицит к закупке, ₽", v: shortR(totalNeedV - totalCovV), s: "потребность за вычетом того, что уже пегировано остатком", tone: "warn" }
+  ]);
+
+  CHART.bars(host.querySelector("#cProvD"), {
+    height: 240, horizontal: true, labelW: 210, valueFmt: num,
+    labels: bands.map(b => b.l),
+    series: [{ name: "Заказов", color: "var(--c1)", data: bands.map(b => b.n) }]
+  });
+
+  tableView(host.querySelector("#tProvOrd"), {
+    id: "tProvOrd", sort: "bs", dir: 1, rows: orders, maxH: 480,
+    cols: [
+      { k: "o", t: "Заказ", cls: "dim" },
+      { k: "e", t: "Оборудование", cls: "name" },
+      { k: "site", t: "Площадка", fmt: v => M.sites[v] || v || "—" },
+      { k: "w", t: "Вид работы", cls: "dim" },
+      { k: "bs", t: "Начало (план)", fmt: v => v ? dateRu(v) : "—" },
+      { k: "nPos", t: "Позиций", n: true, fmt: num },
+      { k: "nCoveredPos", t: "Закрыто остатком", n: true, fmt: num },
+      { k: "posCoveragePct", t: "Обеспеченность", n: true, fmt: v => v == null ? "—" : `<span class="tag ${v >= 80 ? "g" : v >= 40 ? "w" : "n"}">${pct(v)}</span>` },
+      { k: "needV", t: "План, ₽", n: true, fmt: shortR },
+      { k: "covV", t: "Закрыто остатком, ₽", n: true, fmt: shortR },
+      { k: "noCodeN", t: "Без кода ЕКМТР", n: true, fmt: v => v || "—" }
+    ],
+    foot: { name: "Итого", needV: shortR(totalNeedV), covV: shortR(totalCovV) }
+  });
+
+  tableView(host.querySelector("#tProvPos"), {
+    id: "tProvPos", sort: "deficitV", rows: posAgg, bar: "deficitV", maxH: 420,
+    cols: [
+      { k: "ek", t: "№ ЕКМТР", cls: "dim", fmt: v => `<code style="font-size:11px">${esc(v)}</code>` },
+      { k: "name", t: "Наименование", cls: "name" },
+      { k: "nOrders", t: "Заказов затронуто", n: true, fmt: num },
+      { k: "needQty", t: "Нужно, кол-во", n: true, fmt: v => NF2.format(v) },
+      { k: "stockQty", t: "На складе, кол-во", n: true, fmt: v => NF2.format(v) },
+      { k: "deficitQty", t: "Дефицит, кол-во", n: true, fmt: v => v ? NF2.format(v) : "—" },
+      { k: "deficitV", t: "Дефицит, ₽", n: true, fmt: v => v ? shortR(v) : "—" }
+    ],
+    foot: { name: "Итого", deficitV: shortR(sum(posAgg, r => r.deficitV)) }
+  });
 };
 
 /* ---------- Выводы: вовлечение материалов ---------- */
@@ -4698,8 +4933,8 @@ function ensureDetailLoaded(combos) {
     if (D.dets.has(c.key)) return;
     const entry = { key: c.key, s: c.s, y: c.y, data: null, err: null, loading: true };
     D.dets.set(c.key, entry);
-    const done = d => { entry.data = d; entry.loading = false; if (TAB === "ord" || TAB === "eo" || TAB === "mat" || TAB === "todr") renderTab(); };
-    const fail = e => { entry.err = String(e && e.message || e); entry.loading = false; if (TAB === "ord" || TAB === "eo" || TAB === "mat" || TAB === "todr") renderTab(); };
+    const done = d => { entry.data = d; entry.loading = false; if (TAB === "ord" || TAB === "eo" || TAB === "mat" || TAB === "todr" || TAB === "prov") renderTab(); };
+    const fail = e => { entry.err = String(e && e.message || e); entry.loading = false; if (TAB === "ord" || TAB === "eo" || TAB === "mat" || TAB === "todr" || TAB === "prov") renderTab(); };
     if (IS_FILE_PROTO) {
       loadLocalScript("det_" + c.key, "data/" + c.key + ".local.js").then(done).catch(fail);
     } else {
@@ -5685,7 +5920,7 @@ function setTab(t) {
   window.scrollTo({ top: 0, behavior: "instant" in document.documentElement.style ? "instant" : "auto" });
 }
 function maybeLoadDetail() {
-  if (TAB !== "ord" && TAB !== "eo" && TAB !== "mat") return;
+  if (TAB !== "ord" && TAB !== "eo" && TAB !== "mat" && TAB !== "prov") return;
   const w = wantedDetail();
   if (w.combos.length <= DET_AUTO_CAP) DET_FORCE = false;
   if (w.load) ensureDetailLoaded(w.combos);

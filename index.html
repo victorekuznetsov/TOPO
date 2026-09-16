@@ -2846,6 +2846,101 @@ PANES.ktg = function (host) {
   });
 };
 
+/* ---------- МТР УСО: материалы, использованные в заказах подряда ----------
+   uso_mtr.json — отдельная выгрузка (не PM-06, а BW-отчёт «Материалы
+   подрядчика», rawdata/УСО/МТР УСО {год} all.xlsx), 2024-2025; 2026 год
+   недоступен — исходный архив в rawdata залит частями, вторая часть не
+   загружена. Контрагент в самой выгрузке не указан — подтягивается через
+   номер заказа из той же полной детализации ТОиР, что и вкладки «Заказы»/
+   «Контрагенты УСО» (поле «Рабочее место»); для части строк (учётные узлы
+   7101-7104 — это не площадки дашборда, полной детализации по ним нет)
+   сопоставить не с чем, это отражено в meta и explicitly показано, а не
+   скрыто. Три готовых агрегата (см. build_uso_mtr.py в scratchpad сборки):
+     matSlices        — материал × учётный узел × год (без контрагента)
+     vendorMatSlices   — материал × контрагент × год (только сопоставленные)
+     vendorSlices      — контрагент × год (сумма, для Парето) */
+const USO_MTR = { data: null, state: "idle", err: "" };
+function usoMtrEnsure() {
+  if (USO_MTR.state === "ready") return Promise.resolve(USO_MTR.data);
+  if (USO_MTR.__p) return USO_MTR.__p;
+  USO_MTR.state = "loading"; USO_MTR.err = "";
+  const raw = IS_FILE_PROTO
+    ? loadLocalScript("uso_mtr", "uso_mtr.local.js")
+    : fetch("uso_mtr.json").then(r => { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); });
+  USO_MTR.__p = raw.then(d => { USO_MTR.data = d; USO_MTR.state = "ready"; if (TAB === "uso") renderTab(); return d; });
+  USO_MTR.__p.catch(e => { USO_MTR.__p = null; USO_MTR.state = "err"; USO_MTR.err = String(e && e.message || e); if (TAB === "uso") renderTab(); });
+  return USO_MTR.__p;
+}
+function usoMtrRender(host) {
+  if (USO_MTR.state === "idle") usoMtrEnsure();
+  if (USO_MTR.state === "err") { host.innerHTML = callout("bad", `Не удалось загрузить материалы УСО (${esc(USO_MTR.err)}).`); return; }
+  if (USO_MTR.state !== "ready") { host.innerHTML = callout("info", "Загружается витрина материалов УСО (~13 МБ)…"); return; }
+  const d = USO_MTR.data;
+  const siteLab = s => d.meta.siteLabels[s] || (["7101", "7102", "7103", "7104", "2400"].includes(s) ? "Учётный узел " + s : s);
+  const okSite = s => !F.sites.size || d.meta.siteLabels[s] == null || F.sites.has(s);
+  const okYear = y => YS.has(String(y));
+
+  const mat = d.matSlices.filter(r => okSite(r.s) && okYear(r.y));
+  const vmat = d.vendorMatSlices.filter(r => okYear(r.y) && (!F.contractors.size || F.contractors.has(vendor(r.wc))));
+  const vend = d.vendorSlices.filter(r => okYear(r.y) && (!F.contractors.size || F.contractors.has(vendor(r.wc))));
+
+  const vAgg = new Map();
+  vend.forEach(r => {
+    const nm = vendor(r.wc);
+    let x = vAgg.get(nm); if (!x) vAgg.set(nm, x = { name: nm, p: 0, a: 0, n: 0, items: 0 });
+    x.p += r.p; x.a += r.a; x.n += r.n; x.items += r.items;
+  });
+  const vendRows = [...vAgg.values()].sort((a, b) => b.a - a.a);
+
+  const totP = sum(mat, r => r.p), totA = sum(mat, r => r.a);
+  const noVendRows = mat.filter(r => ["7101", "7102", "7103", "7104", "2400"].includes(r.s));
+  const noVendV = sum(noVendRows, r => r.a);
+  const matchShare = d.meta.materialRows ? 100 * d.meta.matchedToContractor / d.meta.materialRows : null;
+
+  host.innerHTML =
+    callout("info", `Отдельная выгрузка (не PM-06): материалы, списанные подрядчиками при исполнении заказов УСО — ${esc(d.meta.years.join("–"))} гг., лист PM-06 файла «МТР УСО {год} all.xlsx». Строк-материалов ${num(d.meta.materialRows)} (ещё ${num(d.meta.serviceRowsDropped)} строк услуг без материала — исключены), из них с контрагентом сопоставлено ${num(d.meta.matchedToContractor)} (${pct(matchShare)}) — через номер заказа по той же полной детализации, что и вкладка «Заказы». 2026 год недоступен: исходный архив в rawdata залит частями, докачана только первая.`) +
+    (noVendV ? callout("warn", `${shortR(noVendV)} факта (${num(noVendRows.length)} строк) числится на учётных узлах 7101-7104 — это не площадки техники, а внутренние коды отражения подрядных затрат; полной детализации заказов по ним нет, контрагента для этих строк установить нельзя. Они входят в суммы ниже, но не входят в разбивку по контрагентам.`) : "") +
+    `<div class="kpis" id="usoMtrKpi"></div>
+     <div class="grid">${card("Контрагенты по материалам", "факт материалов, списанных на заказы подряда — отдельно от стоимости самой услуги", "tUsoMtrV", { tools: dlBtn("tUsoMtrV"), foot: "Не то же самое, что «Факт УСО» в таблице выше: там — стоимость услуги/работы по договору, здесь — стоимость материалов, которые контрагент списал при её исполнении." })}</div>
+     <div class="grid">${card("Материалы в заказах УСО", "клик по заголовку — сортировка", "tUsoMtrM", { tools: dlBtn("tUsoMtrM") })}</div>`;
+
+  document.getElementById("usoMtrKpi").innerHTML = kpi([
+    { l: "Материалов списано", v: shortR(totA), s: `план ${short(totP)} · исполнение ${pct(totP ? 100 * totA / totP : null)}`, tone: "accent" },
+    { l: "Позиций (материал×узел×год)", v: num(mat.length), s: `${num(uniq(mat.map(r => r.name)).length)} наименований` },
+    { l: "Сопоставлено с контрагентом", v: pct(matchShare), s: `${num(d.meta.matchedToContractor)} из ${num(d.meta.materialRows)} строк источника`, tone: matchShare != null && matchShare < 80 ? "warn" : "good" },
+    { l: "Контрагентов с материалами", v: num(vendRows.length), s: vendRows[0] ? "крупнейший: " + esc(trunc(vendRows[0].name, 24)) : "" }
+  ]);
+
+  tableView(host.querySelector("#tUsoMtrV"), {
+    id: "tUsoMtrV", sort: "a", rows: vendRows, bar: "a", maxH: 380,
+    cols: [
+      { k: "name", t: "Контрагент", cls: "name" },
+      { k: "items", t: "Наименований", n: true, fmt: num },
+      { k: "n", t: "Заказов", n: true, fmt: num },
+      { k: "p", t: "План, ₽", n: true, fmt: shortR },
+      { k: "a", t: "Факт, ₽", n: true, fmt: shortR }
+    ],
+    foot: { name: "Итого сопоставлено", p: shortR(sum(vendRows, r => r.p)), a: shortR(sum(vendRows, r => r.a)) }
+  });
+
+  tableView(host.querySelector("#tUsoMtrM"), {
+    id: "tUsoMtrM", sort: "a", rows: mat, bar: "a", maxH: 480,
+    cols: [
+      { k: "name", t: "Материал", cls: "name" },
+      { k: "mfr", t: "Производитель", cls: "dim" },
+      { k: "model", t: "Модель/узел", cls: "dim name" },
+      { k: "s", t: "Площадка / узел учёта", fmt: siteLab },
+      { k: "y", t: "Год", cls: "dim" },
+      { k: "qp", t: "Кол-во план", n: true, fmt: v => v ? NF2.format(v) : "—" },
+      { k: "qf", t: "Кол-во факт", n: true, fmt: v => v ? NF2.format(v) : "—" },
+      { k: "p", t: "План, ₽", n: true, fmt: shortR },
+      { k: "a", t: "Факт, ₽", n: true, fmt: shortR },
+      { k: "n", t: "Заказов", n: true, fmt: num }
+    ],
+    foot: { name: "Итого", p: shortR(totP), a: shortR(totA) }
+  });
+}
+
 /* ---------- Контрагенты УСО ---------- */
 PANES.uso = function (host) {
   const keys = allowedEoKeys();
@@ -2929,6 +3024,9 @@ PANES.uso = function (host) {
     ],
     foot: { name: "Итого", up: shortR(totP), uf: shortR(totF), ex: pct(totP ? 100 * totF / totP : null) }
   });
+
+  host.insertAdjacentHTML("beforeend", `<div id="usoMtrBody"></div>`);
+  usoMtrRender(host.querySelector("#usoMtrBody"));
 };
 
 /* ---------- МТР / ЕКМТР ---------- */

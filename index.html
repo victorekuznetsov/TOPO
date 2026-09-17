@@ -2928,6 +2928,7 @@ function usoMtrRender(host) {
     id: "tUsoMtrM", sort: "a", rows: mat, bar: "a", maxH: 480,
     cols: [
       { k: "name", t: "Материал", cls: "name" },
+      { k: "comp", t: "№ ЕКМТР", cls: "dim", fmt: (v, r) => { const c = v || ekOf(r.name); return c ? `<code style="font-size:11px">${esc(c)}</code>` : "—"; }, raw: (v, r) => v || ekOf(r.name) || "", hint: "Из выгрузки «МТР УСО», при отсутствии — по совпадению наименования со справочником ЕКМТР" },
       { k: "mfr", t: "Производитель", cls: "dim" },
       { k: "model", t: "Модель/узел", cls: "dim name" },
       { k: "s", t: "Площадка / узел учёта", fmt: siteLab },

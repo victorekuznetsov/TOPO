@@ -2898,7 +2898,7 @@ function usoMtrRender(host) {
   const matchShare = d.meta.materialRows ? 100 * d.meta.matchedToContractor / d.meta.materialRows : null;
 
   host.innerHTML =
-    callout("info", `Отдельная выгрузка (не PM-06): материалы, списанные подрядчиками при исполнении заказов УСО — ${esc(d.meta.years.join("–"))} гг., лист PM-06 файла «МТР УСО {год} all.xlsx». Строк-материалов ${num(d.meta.materialRows)} (ещё ${num(d.meta.serviceRowsDropped)} строк услуг без материала — исключены), из них с контрагентом сопоставлено ${num(d.meta.matchedToContractor)} (${pct(matchShare)}) — через номер заказа по той же полной детализации, что и вкладка «Заказы». 2026 год недоступен: исходный архив в rawdata залит частями, докачана только первая.`) +
+    callout("info", `Отдельная выгрузка (не PM-06): материалы, списанные подрядчиками при исполнении заказов УСО — ${esc(d.meta.years.join(", "))} гг., лист PM-06 файла «МТР УСО {год} all.xlsx». Строк-материалов ${num(d.meta.materialRows)} (ещё ${num(d.meta.serviceRowsDropped)} строк услуг без материала — исключены), из них с контрагентом сопоставлено ${num(d.meta.matchedToContractor)} (${pct(matchShare)}) — через номер заказа по той же полной детализации, что и вкладка «Заказы». Новые годы (2028 и далее) загружаются вручную на вкладке «Обновление данных» — без пересборки на сервере.`) +
     (noVendV ? callout("warn", `${shortR(noVendV)} факта (${num(noVendRows.length)} строк) числится на учётных узлах 7101-7104 — это не площадки техники, а внутренние коды отражения подрядных затрат; полной детализации заказов по ним нет, контрагента для этих строк установить нельзя. Они входят в суммы ниже, но не входят в разбивку по контрагентам.`) : "") +
     `<div class="kpis" id="usoMtrKpi"></div>
      <div class="grid">${card("Контрагенты по материалам", "факт материалов, списанных на заказы подряда — отдельно от стоимости самой услуги", "tUsoMtrV", { tools: dlBtn("tUsoMtrV"), foot: "Не то же самое, что «Факт УСО» в таблице выше: там — стоимость услуги/работы по договору, здесь — стоимость материалов, которые контрагент списал при её исполнении." })}</div>
@@ -5774,7 +5774,7 @@ function updLoadLibs() {
     s.onerror = () => rej(new Error("Не удалось загрузить " + src + " — папка lib должна лежать рядом с index.html"));
     document.head.appendChild(s);
   });
-  UPD_LIBS = Promise.all([one("lib/xlsx_stream.js"), one("lib/pm06_pipeline.js"), one("lib/zip_write.js")])
+  UPD_LIBS = Promise.all([one("lib/xlsx_stream.js"), one("lib/pm06_pipeline.js"), one("lib/zip_write.js"), one("lib/uso_pipeline.js")])
     .catch(e => { UPD_LIBS = null; throw e; });
   return UPD_LIBS;
 }
@@ -5902,6 +5902,237 @@ async function updDownload() {
   renderTab();
 }
 
+/* ---------- Обновление данных: материалы УСО ---------- */
+/* Тот же приём, что и для основной выгрузки PM-06 выше, но для файла
+   «МТР УСО {год} all.xlsx» (см. lib/uso_pipeline.js) — один файл сразу
+   на все площадки, единица слияния «год», а не «площадка×год». Чтобы
+   определить контрагента по номеру заказа, нужна полная детализация
+   ТОиР (data/{площадка}_{год}.json) по всем 4 площадкам за те же годы —
+   догружается здесь же, независимо от того, что выбрано в фильтрах
+   слева (это разовая операция обновления, а не витрина среза). */
+const UPD_USO = { files: [], results: [], merged: null, updatedYears: null, busy: false, msg: "", err: "", progress: null };
+const UPD_USO_SITES = ["1100", "1200", "1300", "1400"];
+
+function updUsoParseName(name) {
+  const m = /(\d{4})/.exec(name.replace(/\.xlsx$/i, ""));
+  return m ? m[1] : "";
+}
+
+function ensureDetailLoadedAsync(combos) {
+  ensureDetailLoaded(combos);
+  return new Promise(resolve => {
+    const check = () => {
+      const dets = loadedDetails(combos);
+      if (dets.length >= combos.length && dets.every(e => !e.loading)) resolve(dets);
+      else setTimeout(check, 150);
+    };
+    check();
+  });
+}
+
+/* Контрагент заказа — самое частое «Рабочее место» среди его строк в
+   полной детализации (заказ теоретически может проходить по нескольким
+   рабочим местам на разных строках — берём преобладающее), тем же
+   приёмом, что и build_uso_mtr.py (Counter.most_common). */
+async function usoUpdBuildOrder2Wc(years) {
+  const combos = [];
+  UPD_USO_SITES.forEach(s => years.forEach(y => combos.push({ s, y, key: s + "_" + y })));
+  const dets = await ensureDetailLoadedAsync(combos);
+  const order2wc = new Map();
+  dets.forEach(entry => {
+    const d = entry.data;
+    if (!d || !d.wc || !d.wci) return;
+    const cnt = new Map();
+    for (let i = 0; i < d.n; i++) {
+      const w = d.wc[d.wci[i]];
+      if (!w) continue;
+      const o = d.o[i];
+      let m = cnt.get(o); if (!m) cnt.set(o, m = new Map());
+      m.set(w, (m.get(w) || 0) + 1);
+    }
+    cnt.forEach((m, o) => {
+      let best = "", bn = -1;
+      m.forEach((n, w) => { if (n > bn) { bn = n; best = w; } });
+      order2wc.set(o, best);
+    });
+  });
+  return order2wc;
+}
+
+async function updUsoRun() {
+  if (UPD_USO.busy || !UPD_USO.files.length) return;
+  UPD_USO.busy = true; UPD_USO.err = ""; UPD_USO.results = []; UPD_USO.merged = null;
+  renderTab();
+  try {
+    await updLoadLibs();
+    await usoMtrEnsure();
+    if (USO_MTR.state === "err") throw new Error("Не удалось загрузить текущий uso_mtr.json (" + USO_MTR.err + ") — обновлять нечего.");
+    const results = [];
+    for (let i = 0; i < UPD_USO.files.length; i++) {
+      const f = UPD_USO.files[i];
+      if (!f.year) throw new Error(`Для файла «${f.file.name}» не определён год — укажите вручную`);
+      UPD_USO.progress = { i, total: UPD_USO.files.length, name: f.file.name, pct: 0 };
+      renderTab();
+      const zip = await XLSXStream.openZip(f.file);
+      const proc = USOPIPE.createProcessor(f.year);
+      await XLSXStream.streamSheet(zip, "PM-06", cells => proc.pushRow(cells), pr => {
+        UPD_USO.progress = { i, total: UPD_USO.files.length, name: f.file.name, pct: Math.round(100 * pr.done / (pr.total || 1)) };
+        const el = document.getElementById("updUsoBar");
+        if (el) el.style.width = UPD_USO.progress.pct + "%";
+        const t = document.getElementById("updUsoBarTxt");
+        if (t) t.textContent = `${f.file.name} — ${UPD_USO.progress.pct}%`;
+      });
+      results.push(proc.finish());
+    }
+    const years = [...new Set(results.map(r => r.year))];
+    /* Часть заказов, попавших в выгрузку года Y, своим рабочим местом
+       «известны» только в детализации соседнего года (заказ переходит
+       через границу года) — без year±1 совпадений на 5-6% меньше (сверено
+       с build_uso_mtr.py, который сопоставлял сразу по всем годам). */
+    const lookupYears = [...new Set(years.flatMap(y => [String(+y - 1), y, String(+y + 1)]))];
+    const barTxt = document.getElementById("updUsoBarTxt");
+    if (barTxt) barTxt.textContent = "Сопоставление контрагентов по номеру заказа (" + years.join(", ") + ")…";
+    const order2wc = await usoUpdBuildOrder2Wc(lookupYears);
+    const agg = USOPIPE.aggregate(results, order2wc);
+    UPD_USO.updatedYears = new Set(years);
+    UPD_USO.merged = USOPIPE.mergeIntoData(USO_MTR.data, agg, UPD_USO.updatedYears);
+    UPD_USO.results = results;
+    UPD_USO.progress = null;
+    UPD_USO.msg = `Готово: разобрано ${results.length} файлов (${years.join(", ")}), ${num(agg.totalRows)} строк материалов, сопоставлено с контрагентом ${num(agg.matched)} (${pct(agg.totalRows ? 100 * agg.matched / agg.totalRows : null)}). Проверьте изменения ниже, затем примените или скачайте файл.`;
+  } catch (e) {
+    UPD_USO.err = String(e && e.message || e);
+    UPD_USO.progress = null;
+  }
+  UPD_USO.busy = false;
+  renderTab();
+}
+
+function updUsoApply() {
+  if (!UPD_USO.merged) return;
+  USO_MTR.data = UPD_USO.merged;
+  USO_MTR.state = "ready";
+  UPD_USO.msg = "Новые годы применены к текущему сеансу (вкладка «Контрагенты УСО»). Чтобы они остались после перезагрузки — скачайте файл и распакуйте его в папку отчёта.";
+  refresh();
+}
+
+async function updUsoDownload() {
+  if (!UPD_USO.merged || UPD_USO.busy) return;
+  UPD_USO.busy = true; UPD_USO.err = ""; renderTab();
+  try {
+    const text = JSON.stringify(UPD_USO.merged);
+    const files = [
+      { name: "uso_mtr.json", text },
+      { name: "uso_mtr.local.js", text: `__LOCAL_ASSET(${JSON.stringify("uso_mtr")},${text});` }
+    ];
+    const blob = await ZipWrite.build(files, (name, i, total) => {
+      const t = document.getElementById("updUsoBarTxt");
+      if (t) t.textContent = `Упаковка ${i + 1} из ${total}: ${name}`;
+      return new Promise(r2 => setTimeout(r2, 0));
+    });
+    const stamp = new Date().toISOString().slice(0, 10);
+    ZipWrite.download(blob, `uso-mtr-${stamp}.zip`);
+    UPD_USO.msg = `Архив собран (${(blob.size / 1e6).toFixed(1)} МБ). Распакуйте uso_mtr.json и uso_mtr.local.js в папку отчёта с заменой.`;
+  } catch (e) {
+    UPD_USO.err = String(e && e.message || e);
+  }
+  UPD_USO.busy = false;
+  renderTab();
+}
+
+function updUsoRender(host) {
+  const files = UPD_USO.files;
+  let head = callout("info",
+    `Пересборка витрины материалов УСО из новых файлов <b>МТР УСО {год} all.xlsx</b> — один файл сразу на все площадки. ` +
+    `Контрагент подтягивается через номер заказа из полной детализации ТОиР (данные площадок 1100/1200/1300/1400 за указанные годы догрузятся автоматически, если их ещё нет). ` +
+    `Обновляются только годы выбранных файлов — остальные остаются как есть.`);
+  if (UPD_USO.err) head += callout("bad", esc(UPD_USO.err));
+  else if (UPD_USO.msg) head += callout("info", esc(UPD_USO.msg));
+
+  const rowsHtml = files.map((f, i) => `<tr>
+      <td class="name">${esc(f.file.name)}</td>
+      <td class="n">${(f.file.size / 1e6).toFixed(1)} МБ</td>
+      <td><input class="updUsoIn" data-i="${i}" value="${esc(f.year)}" size="6"></td>
+      <td class="dim">${f.year ? "год " + esc(f.year) : "укажите год"}</td>
+    </tr>`).join("");
+
+  host.innerHTML = head +
+    `<div class="grid">
+       ${card("Файлы «МТР УСО»", files.length ? `${files.length} файлов` : "файлы не выбраны", "updUsoFiles", {
+      tools: `<button class="minibtn" type="button" id="updUsoPick">Выбрать файлы…</button>` +
+        (files.length ? ` <button class="minibtn" type="button" id="updUsoClear">Очистить</button>` : "") +
+        (files.length ? ` <button class="minibtn" type="button" id="updUsoGo"${UPD_USO.busy ? " disabled" : ""}>${UPD_USO.busy ? "Обработка…" : "Пересобрать"}</button>` : "")
+    })}
+     </div>
+     <input type="file" id="updUsoInput" accept=".xlsx" multiple hidden>`;
+
+  const cardBody = host.querySelector("#updUsoFiles");
+  cardBody.innerHTML = files.length
+    ? `<div class="tw"><table><thead><tr><th>Файл</th><th class="n">Размер</th><th>Год</th><th>Проверка</th></tr></thead><tbody>${rowsHtml}</tbody></table></div>`
+    : `<div class="empty">Нажмите «Выбрать файлы…» и укажите файлы «МТР УСО {год} all.xlsx». Год определяется по имени файла.</div>`;
+
+  if (UPD_USO.busy || UPD_USO.progress) {
+    cardBody.insertAdjacentHTML("beforeend",
+      `<div style="margin-top:12px">
+         <div style="height:8px;background:var(--line);border-radius:4px;overflow:hidden">
+           <div id="updUsoBar" style="height:100%;width:${UPD_USO.progress ? UPD_USO.progress.pct : 0}%;background:var(--accent);transition:width .2s"></div>
+         </div>
+         <div class="dim" id="updUsoBarTxt" style="margin-top:6px;font-size:12px">${UPD_USO.progress ? esc(UPD_USO.progress.name) + " — " + UPD_USO.progress.pct + "%" : "Подготовка…"}</div>
+       </div>`);
+  }
+
+  if (UPD_USO.merged) {
+    const cur = USO_MTR.data;
+    const diff = [...UPD_USO.updatedYears].sort().map(y => {
+      const was = (cur.matSlices || []).filter(r => String(r.y) === y);
+      const now = (UPD_USO.merged.matSlices || []).filter(r => String(r.y) === y);
+      const wasP = sum(was, r => r.p), wasA = sum(was, r => r.a);
+      const nowP = sum(now, r => r.p), nowA = sum(now, r => r.a);
+      return { y, wasN: was.length, nowN: now.length, wasP, nowP, wasA, nowA, dP: nowP - wasP, dA: nowA - wasA };
+    });
+    host.insertAdjacentHTML("beforeend",
+      `<div class="grid">${card("Что изменится", "сравнение с данными, загруженными сейчас", "updUsoDiff", {
+        tools: `<button class="minibtn" type="button" id="updUsoApply"${UPD_USO.busy ? " disabled" : ""}>Применить в этом сеансе</button>` +
+          ` <button class="minibtn" type="button" id="updUsoZip"${UPD_USO.busy ? " disabled" : ""}>Скачать uso_mtr.json (ZIP)</button>`
+      })}</div>`);
+    tableView(host.querySelector("#updUsoDiff"), {
+      id: "updUsoDiff", rows: diff, sort: "y", maxH: 300,
+      cols: [
+        { k: "y", t: "Год" },
+        { k: "wasN", t: "Позиций было", n: true, fmt: num },
+        { k: "nowN", t: "Позиций стало", n: true, fmt: num },
+        { k: "wasP", t: "План было", n: true, fmt: shortR },
+        { k: "nowP", t: "План стало", n: true, fmt: shortR },
+        { k: "dP", t: "Δ плана", n: true, fmt: v => (v > 0 ? "+" : "") + shortR(v) },
+        { k: "wasA", t: "Факт было", n: true, fmt: shortR },
+        { k: "nowA", t: "Факт стало", n: true, fmt: shortR },
+        { k: "dA", t: "Δ факта", n: true, fmt: v => (v > 0 ? "+" : "") + shortR(v) }
+      ]
+    });
+    host.insertAdjacentHTML("beforeend", callout("warn",
+      `«Применить в этом сеансе» меняет цифры только до перезакрытия страницы. Чтобы обновление осталось насовсем — скачайте архив и распакуйте <code>uso_mtr.json</code>/<code>uso_mtr.local.js</code> в папку отчёта с заменой; для опубликованной версии их же нужно закоммитить в репозиторий.`));
+  }
+
+  const inp = host.querySelector("#updUsoInput");
+  const pick = host.querySelector("#updUsoPick");
+  if (pick) pick.onclick = () => inp.click();
+  inp.onchange = () => {
+    UPD_USO.files = [...inp.files].map(file => ({ file, year: updUsoParseName(file.name) }));
+    UPD_USO.msg = ""; UPD_USO.err = ""; UPD_USO.merged = null; UPD_USO.results = [];
+    renderTab();
+  };
+  const clr = host.querySelector("#updUsoClear");
+  if (clr) clr.onclick = () => { UPD_USO.files = []; UPD_USO.merged = null; UPD_USO.results = []; UPD_USO.msg = ""; UPD_USO.err = ""; renderTab(); };
+  const go = host.querySelector("#updUsoGo");
+  if (go) go.onclick = updUsoRun;
+  const ap = host.querySelector("#updUsoApply");
+  if (ap) ap.onclick = updUsoApply;
+  const zp = host.querySelector("#updUsoZip");
+  if (zp) zp.onclick = updUsoDownload;
+  host.querySelectorAll(".updUsoIn").forEach(el => {
+    el.onchange = () => { UPD_USO.files[+el.dataset.i].year = el.value.trim(); renderTab(); };
+  });
+}
+
 PANES.upd = function (host) {
   const files = UPD.files;
   let head = callout("info",
@@ -6005,6 +6236,9 @@ PANES.upd = function (host) {
   host.querySelectorAll(".updIn").forEach(el => {
     el.onchange = () => { UPD.files[+el.dataset.i][el.dataset.k] = el.value.trim(); renderTab(); };
   });
+
+  host.insertAdjacentHTML("beforeend", `<div id="updUsoBody"></div>`);
+  updUsoRender(host.querySelector("#updUsoBody"));
 };
 
 function setTab(t) {

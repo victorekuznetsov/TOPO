@@ -2878,9 +2878,10 @@ function usoMtrEnsure() {
 }
 function usoAdopt(data) { USO_MTR.data = data; USO_MTR.state = "ready"; USO_MTR.__p = Promise.resolve(data); }
 
-/* Площадка единицы оборудования — чтобы фильтр площадки действовал и на
-   строках, учтённых на внутренних узлах 7101-7104: сам заказ там числится
-   не за площадкой техники, но ЕО у него настоящая. */
+/* Площадка единицы оборудования. Заказ ведёт та площадка, что его
+   планирует (у 95% материалов это сервисные площадки АО «Развитие»
+   7101-7104), а техника числится за добывающим активом — поэтому
+   «свою» площадку заказа для фильтра определяем по его ЕО. */
 function usoEoSite() {
   if (USO_EO_SITE) return USO_EO_SITE;
   const m = new Map();
@@ -2898,7 +2899,12 @@ function usoOrderMask(d) {
   const keys = allowedEoKeys();
   const eoSite = (F.sites.size) ? usoEoSite() : null;
   const okYear = D.yr.map(y => YS.has(String(y)));
-  const okSite = D.st.map(s => !F.sites.size || F.sites.has(s));
+  /* Код площадки заказа приводим к добывающему активу: 7101-7104 — это
+     сервисные площадки АО «Развитие» (Красноярск, Иркутск, Алдан,
+     Магадан), 2400 — ООО «Полюс Сухой Лог». Без этой свёртки фильтр
+     площадки отсекал бы 95% строк витрины. */
+  const SR = (d.meta && d.meta.siteRegion) || {};
+  const regOf = D.st.map(s => SR[s] || s);
   const okWork = D.wk.map(w => !F.works.size || (w && F.works.has(w)));
   const okMethod = D.mu.map(u => !F.methods.size || F.methods.has(u)
     || (F.methods.has("Хозспособ") && u === "ХС") || (F.methods.has("Комбинированный") && u === "Комб"));
@@ -2922,11 +2928,10 @@ function usoOrderMask(d) {
       || !okReason[O.rs[i]] || !okMonth[O.mo[i]]) continue;
     const ek = eoKeys[O.eo[i]];
     if (F.sites.size) {
-      /* Площадка заказа — либо своя (1100…1400), либо площадка его ЕО,
-         если заказ учтён на внутреннем узле. */
-      const own = okSite[O.s[i]];
-      const viaEo = ek && eoSite.has(ek) && F.sites.has(eoSite.get(ek));
-      if (!own && !viaEo) continue;
+      /* Площадка отбора — площадка самой техники, если ЕО известна
+         (это и есть «чей актив»), иначе свёрнутый код заказа. */
+      const site = (ek && eoSite.get(ek)) || regOf[O.s[i]];
+      if (!F.sites.has(site)) continue;
     }
     if (F.fleets.size && !(ek && F.fleets.has(eoFleet[O.eo[i]]))) continue;
     /* Класс/производитель/модель/гараж — общий мост дашборда по ЕО; если
@@ -2951,7 +2956,7 @@ function usoMtrAgg(d) {
   const ppzOn = F.ppz.size > 0;
   const ppzCache = ppzOn ? new Map() : null;   // (позиция, код) → прошла ли фильтр ППЗ
 
-  const mats = new Map(), vends = new Map(), years = new Map();
+  const mats = new Map(), vends = new Map(), years = new Map(), sites = new Map();
   let totP = 0, totA = 0, nRowsKept = 0, noVendA = 0, noVendN = 0;
   const seenOrders = new Set();
 
@@ -2977,12 +2982,20 @@ function usoMtrAgg(d) {
     }
     const p = R.p[i], a = R.a[i], qp = R.qp[i], qf = R.qf[i];
     const site = D.st[O.s[oi]], year = D.yr[O.y[oi]];
+    const be = (D.be && D.be[O.be ? O.be[oi] : 0]) || "";
     totP += p; totA += a; nRowsKept++;
     seenOrders.add(O.o[oi]);
 
-    const mk = ni + "|" + O.s[oi] + "|" + O.y[oi];
+    /* Кто ведёт заказ (площадка) × чья техника и чьи деньги (балансовая
+       единица) — разрез, который объясняет коды 7101-7104. */
+    const sk = O.s[oi] + "|" + be;
+    let st = sites.get(sk);
+    if (!st) sites.set(sk, st = { s: site, be, p: 0, a: 0, items: new Set(), orders: new Set() });
+    st.p += p; st.a += a; st.items.add(ni); st.orders.add(O.o[oi]);
+
+    const mk = ni + "|" + O.s[oi] + "|" + O.y[oi] + "|" + (O.be ? O.be[oi] : 0);
     let m = mats.get(mk);
-    if (!m) mats.set(mk, m = { name, ek, cat: oemOf(name), mfr: D.mf[O.mf[oi]], model: D.md[O.md[oi]], s: site, y: year, qp: 0, qf: 0, p: 0, a: 0, orders: new Set() });
+    if (!m) mats.set(mk, m = { name, ek, cat: oemOf(name), mfr: D.mf[O.mf[oi]], model: D.md[O.md[oi]], s: site, be, y: year, qp: 0, qf: 0, p: 0, a: 0, orders: new Set() });
     m.qp += qp; m.qf += qf; m.p += p; m.a += a; m.orders.add(O.o[oi]);
     if (!m.ek && ek) m.ek = ek;
 
@@ -3000,7 +3013,7 @@ function usoMtrAgg(d) {
   }
 
   const matRows = [...mats.values()].map(m => ({
-    name: m.name, ek: m.ek, cat: m.cat, mfr: m.mfr, model: m.model, s: m.s, y: m.y,
+    name: m.name, ek: m.ek, cat: m.cat, mfr: m.mfr, model: m.model, s: m.s, be: m.be, y: m.y,
     qp: Math.round(m.qp * 100) / 100, qf: Math.round(m.qf * 100) / 100,
     p: m.p, a: m.a, n: m.orders.size
   }));
@@ -3012,7 +3025,16 @@ function usoMtrAgg(d) {
     y: y.y, p: y.p, a: y.a, n: y.n, orders: y.orders.size, ex: y.p ? 100 * y.a / y.p : null
   })).sort((x, y2) => String(x.y).localeCompare(String(y2.y)));
 
-  return { matRows, vendRows, yearRows, totP, totA, nRowsKept, nOrders: seenOrders.size, noVendA, noVendN };
+  const SR = (d.meta && d.meta.siteRegion) || {};
+  const siteRows = [...sites.values()].map(x => ({
+    s: x.s, reg: SR[x.s] || x.s, svc: /^71\d\d$/.test(x.s), be: x.be, p: x.p, a: x.a,
+    items: x.items.size, n: x.orders.size,
+    ex: x.p ? 100 * x.a / x.p : null, sh: totP ? 100 * x.p / totP : null
+  })).sort((x, y2) => y2.p - x.p);
+  const svcP = sum(siteRows.filter(r => r.svc), r => r.p);
+
+  return { matRows, vendRows, yearRows, siteRows, svcShare: totP ? 100 * svcP / totP : null,
+    totP, totA, nRowsKept, nOrders: seenOrders.size, noVendA, noVendN };
 }
 
 function usoMtrRender(host) {
@@ -3023,7 +3045,8 @@ function usoMtrRender(host) {
   if (!d.row || !d.dict) { host.innerHTML = callout("bad", "Файл uso_mtr.json старого формата — пересоберите его на вкладке «Обновление данных»."); return; }
 
   const A = usoMtrAgg(d);
-  const siteLab = s => d.meta.siteLabels[s] || (/^7\d{3}$|^2400$/.test(s) ? "Узел учёта " + s : s);
+  const SL = d.meta.siteLabels || {};
+  const siteLab = s => SL[s] || M.sites[s] || s;
   const matchShare = d.meta.materialRows ? 100 * d.meta.matchedToContractor / d.meta.materialRows : null;
   const filtersOn = countFilters();
 
@@ -3036,6 +3059,7 @@ function usoMtrRender(host) {
        ${card("Материалы УСО по годам", "план, факт и исполнение в текущем срезе", "cUsoY", { foot: "Диаграмма и все таблицы ниже считаются по строкам витрины на лету — любой фильтр слева меняет их сразу." })}
        ${card("Контрагенты по материалам", "20 крупнейших по факту материалов", "cUsoV", { foot: "Не то же самое, что «Факт УСО» выше: там — стоимость услуги по договору, здесь — стоимость материалов, списанных при её исполнении." })}
      </div>
+     <div class="grid">${card("Кто ведёт заказ и чья это техника", "площадка планирования × балансовая единица", "tUsoSite", { tools: dlBtn("tUsoSite"), foot: "Коды 7101-7104 — сервисные площадки АО «Развитие» (Красноярск, Иркутск, Алдан, Магадан), 2400 — ООО «Полюс Сухой Лог»: заказ планирует и ведёт сервисная компания, а техника и деньги остаются за добывающим активом из колонки «Заказчик». Клик по строке ставит фильтр площадки слева — он сворачивает сервисные коды к активу, поэтому «Красноярск / Еруда» показывает и 1100, и 7101." })}</div>
      <div class="grid">${card("Контрагенты: материалы в заказах подряда", "план, факт и исполнение по материалам", "tUsoMtrV", { tools: dlBtn("tUsoMtrV") })}</div>
      <div class="quickfind" style="margin:12px 0"><label>Поиск в материалах<input type="search" id="qUso" placeholder="наименование, № ЕКМТР, каталожный №, модель или заказ" value="${esc(QUSO)}"></label></div>
      <div class="grid">${card("Материалы в заказах УСО", "клик по заголовку — сортировка", "tUsoMtrM", { tools: dlBtn("tUsoMtrM") })}</div>`;
@@ -3045,6 +3069,7 @@ function usoMtrRender(host) {
     { l: "Строк в срезе", v: num(A.nRowsKept), s: `${num(A.matRows.length)} позиций · ${num(A.nOrders)} заказов${filtersOn ? " · фильтров: " + num(filtersOn) : " · без фильтров"}` },
     { l: "Наименований", v: num(uniq(A.matRows.map(r => r.name)).length), s: `${num(uniq(A.matRows.map(r => r.ek).filter(Boolean)).length)} с № ЕКМТР` },
     { l: "Контрагентов", v: num(A.vendRows.length), s: A.vendRows[0] ? "крупнейший: " + esc(trunc(A.vendRows[0].name, 22)) : "—" },
+    { l: "Через АО «Развитие»", v: pct(A.svcShare), s: "доля плана по заказам сервисных площадок 7101-7104" },
     { l: "Сопоставлено с контрагентом", v: pct(A.totA ? 100 * (A.totA - A.noVendA) / A.totA : null), s: "доля факта, у которого известен подрядчик", tone: A.noVendA ? "warn" : "good" }
   ]);
 
@@ -3060,6 +3085,31 @@ function usoMtrRender(host) {
     height: 240, horizontal: true, labelW: 150, valueFmt: shortR,
     labels: A.vendRows.slice(0, 20).map(r => trunc(r.name, 24)),
     series: [{ name: "Факт материалов", color: "var(--c1)", data: A.vendRows.slice(0, 20).map(r => r.a) }]
+  });
+
+  tableView(host.querySelector("#tUsoSite"), {
+    id: "tUsoSite", sort: "p", rows: A.siteRows, bar: "p", maxH: 320,
+    empty: "Нет заказов в текущем срезе",
+    /* Клик — фильтр площадки слева: ставим код добывающего актива, к
+       которому свёрнут сервисный код, иначе фильтр не нашёл бы ничего. */
+    onRow: r => {
+      if (F.sites.has(r.reg) && F.sites.size === 1) F.sites.clear();
+      else { F.sites.clear(); F.sites.add(r.reg); }
+      refresh();
+    },
+    isSel: r => F.sites.has(r.reg),
+    cols: [
+      { k: "s", t: "Площадка заказа", cls: "name", fmt: (v, r) => `${esc(siteLab(v))} <span class="dim">· ${esc(v)}</span>${r.svc ? ' <span class="tag">сервис</span>' : ""}`, raw: (v, r) => siteLab(v) + " " + v },
+      { k: "reg", t: "Актив", fmt: v => esc(M.sites[v] || v), raw: v => M.sites[v] || v, hint: "Добывающая площадка, к которой относится техника заказа — по ней и работает фильтр слева" },
+      { k: "be", t: "Заказчик", cls: "dim name", hint: "Балансовая единица из выгрузки: чья техника и чей бюджет" },
+      { k: "n", t: "Заказов", n: true, fmt: num },
+      { k: "items", t: "Наименований", n: true, fmt: num },
+      { k: "p", t: "План, ₽", n: true, fmt: shortR, pf: "plan" },
+      { k: "a", t: "Факт, ₽", n: true, fmt: shortR, pf: "fact" },
+      { k: "ex", t: "Исполнение", n: true, fmt: v => v == null ? "—" : `<span class="tag ${v >= 90 && v <= 110 ? "g" : v > 110 ? "b" : "w"}">${pct(v)}</span>` },
+      { k: "sh", t: "Доля плана", n: true, fmt: pct }
+    ],
+    foot: { s: "Итого", n: num(sum(A.siteRows, r => r.n)), p: shortR(A.totP), a: shortR(A.totA) }
   });
 
   tableView(host.querySelector("#tUsoMtrV"), {
@@ -3105,7 +3155,8 @@ function usoMtrRender(host) {
       { k: "cat", t: "Каталожный №", cls: "dim", fmt: v => v ? `<code style="font-size:11px">${esc(v)}</code>` : "—", hint: "Номер детали производителя из каталога oem_idx.json — по наименованию позиции" },
       { k: "mfr", t: "Производитель", cls: "dim" },
       { k: "model", t: "Модель/узел", cls: "dim name" },
-      { k: "s", t: "Площадка / узел учёта", fmt: siteLab },
+      { k: "s", t: "Площадка заказа", fmt: siteLab, raw: siteLab, hint: "Кто планирует и ведёт заказ: 7101-7104 — сервисные площадки АО «Развитие», 2400 — ООО «Полюс Сухой Лог»" },
+      { k: "be", t: "Заказчик", cls: "dim", fmt: v => esc(trunc(v || "—", 22)), hint: "Балансовая единица: чья техника и чей бюджет" },
       { k: "y", t: "Год", cls: "dim" },
       { k: "qp", t: "Кол-во план", n: true, fmt: v => v ? NF2.format(v) : "—" },
       { k: "qf", t: "Кол-во факт", n: true, fmt: v => v ? NF2.format(v) : "—" },
@@ -4643,6 +4694,7 @@ PANES.doc = function (host) {
       { src: "Закупка ALL", d: "27.08.2026", v: (STK.data ? num(STK.data.meta.buyRowsSrc) + " строк" : "27 352 строки"), w: "Открытые заявки и заказы на поставку: количество, «ещё поставить», в пути, плановая цена, даты заявки и поставки." },
       { src: "Аналоги КСУ", d: "25.08.2026", v: (MTRU.data ? num(MTRU.data.an.ms.length) + " групп" : "38 757 групп"), w: "Группы взаимозаменяемости: ведущая деталь и заменители, тип аналога, статус ОПИ." },
       { src: "Справочник ЕКМТР", d: "28.08.2026", v: num((EKIDX.ek || []).length) + " позиций", w: "Наименование, каталожный номер, подгруппа плана закупа и изготовитель по коду ЕКМТР." },
+      { src: "МТР УСО (BW)", d: (USO_MTR.data ? USO_MTR.data.meta.years.join("–") : "2024–2027"), v: (USO_MTR.data ? num(USO_MTR.data.meta.materialRows) + " строк" : "338 805 строк"), w: "Материалы, списанные подрядчиками при исполнении заказов УСО: наименование, № ЕКМТР, количества и суммы. Отдельная выгрузка, не PM-06; заказы в ней ведут сервисные площадки АО «Развитие» (7101-7104), а балансовая единица показывает заказчика." },
       { src: "КТГ (PM-06)", d: (M.ktgYears || []).length ? M.ktgYears[0] + "–" + M.ktgYears[M.ktgYears.length - 1] : "—", v: num((M.ktg || []).length) + " единиц", w: "План и факт коэффициента технической готовности по месяцам, по каждой единице техники." }
     ],
     cols: [
@@ -4709,7 +4761,7 @@ PANES.doc = function (host) {
   /* --- где действуют фильтры --- */
   tableView(host.querySelector("#docFilt"), {
     id: "docFilt", sort: null, rows: [
-      { f: "Площадка, Год", w: "Везде", n: "Основные измерения витрины: есть в каждом срезе." },
+      { f: "Площадка, Год", w: "Везде", n: "Основные измерения витрины: есть в каждом срезе. В материалах УСО заказ ведёт не добывающая площадка, а сервисная — АО «Развитие» (коды 7101-7104) или ООО «Полюс Сухой Лог» (2400); для фильтра такой код сворачивается к активу, а если у заказа известна единица оборудования, берётся её площадка." },
       { f: "Период (базис-месяц)", w: "Сводка, Динамика, CAPEX", n: "Месяц — реквизит заказа, а не строки. Там, где витрина без месяца, фильтр не действует." },
       { f: "Способ, Вид работы, Парк", w: "Везде, кроме КТГ", n: "Признаки заказа. В справочнике КТГ их нет." },
       { f: "CAPEX / OPEX", w: "CAPEX, Динамика (график по годам), Заказы, Оборудование, Материалы, Запасы", n: "Причина инвестиций известна по заказу или по материалу; на большинстве сводных вкладок этого измерения нет." },
@@ -4733,6 +4785,7 @@ PANES.doc = function (host) {
       <li><b>Единицы измерения в PM-06 нет.</b> Цена получается делением стоимости на количество. Сравнение цен разных позиций (в том числе аналогов) ненадёжно.</li>
       <li><b>Наработки техники нет.</b> Ни моточасов, ни пробега — поэтому удельные затраты на моточас не считаются, а нормировать расход не от чего. В BW-модели КТГ такие показатели есть, но в выгрузку не включены.</li>
       <li><b>Полная детализация «заказ → компонент»</b> хранится файлами по площадке и году и весит десятки мегабайт. Пока она не загружена, вкладки «Заказы» и «Оборудование» показывают встроенный срез крупнейших заказов и честно пишут об этом. Фильтры подрядчика, CAPEX и ППЗ там работают только по полной детализации.</li>
+      <li><b>Заказ ведёт сервисная площадка, а техника — за активом.</b> В материалах УСО 96,6% плана проходит через коды 7101-7104 — площадки АО «Развитие» в Красноярске, Иркутске, Алдане и Магадане; 2400 — ООО «Полюс Сухой Лог». Чья это техника и чей бюджет, показывает балансовая единица («Заказчик» в таблицах). Фильтр площадки учитывает и то, и другое, поэтому суммы по активам не теряются, но сумма по двум активам может быть больше их «своих» кодов: заказ с техникой одного актива иногда ведёт сервисная площадка другого.</li>
       <li><b>Справочные позиции заказа (тип «S»)</b> без количества и собственной стоимости в отчёт не попадают: они давали пустые строки в составах заказов. Те немногие, по которым прошёл факт, сохранены.</li>
       <li><b>Наименования подрядчиков усечены</b> в выгрузке до 20 символов, поэтому один контрагент встречается в нескольких написаниях. Склейка включена по умолчанию, переключатель — в блоке «Методика» слева.</li>
       <li><b>Не вся номенклатура склада относится к ремонтам.</b> Из складского запаса в контур ТОиР попадает около девятой части: остальное — руда, золото, продукция и технологические расходники. Граница задаётся фильтром «ППЗ: ТОиР / не ТОиР» и правится в коде страницы.</li>

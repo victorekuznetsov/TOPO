@@ -2848,18 +2848,23 @@ PANES.ktg = function (host) {
 
 /* ---------- МТР УСО: материалы, использованные в заказах подряда ----------
    uso_mtr.json — отдельная выгрузка (не PM-06, а BW-отчёт «Материалы
-   подрядчика», rawdata/УСО/МТР УСО {год} all.xlsx), 2024-2025; 2026 год
-   недоступен — исходный архив в rawdata залит частями, вторая часть не
-   загружена. Контрагент в самой выгрузке не указан — подтягивается через
-   номер заказа из той же полной детализации ТОиР, что и вкладки «Заказы»/
-   «Контрагенты УСО» (поле «Рабочее место»); для части строк (учётные узлы
-   7101-7104 — это не площадки дашборда, полной детализации по ним нет)
-   сопоставить не с чем, это отражено в meta и explicitly показано, а не
-   скрыто. Три готовых агрегата (см. build_uso_mtr.py в scratchpad сборки):
-     matSlices        — материал × учётный узел × год (без контрагента)
-     vendorMatSlices   — материал × контрагент × год (только сопоставленные)
-     vendorSlices      — контрагент × год (сумма, для Парето) */
+   подрядчика», rawdata/УСО/МТР УСО {год} all.xlsx), 2024-2027. Витрина
+   построчная (v2), а не предагрегированная: раньше лежали готовые срезы
+   «материал × площадка × год», и из-за этого фильтры слева — подрядчик,
+   парк, модель, вид работы, CAPEX/OPEX, месяц — молча не действовали:
+   измерений в срезе просто не было. Теперь строки лежат как есть
+   (словари + индексы, 338 тыс. строк ≈ 15 МБ), а агрегат считается в
+   браузере на каждый рендер, поэтому работают все фильтры сразу.
+
+   Свойства, постоянные внутри заказа (площадка, производитель, модель
+   заводская), и подтянутые по номеру заказа из полной детализации ТОиР
+   (контрагент, вид работы, способ, причина инвестиций, базис-месяц,
+   единица оборудования) хранятся один раз на заказ — d.ord; на строке
+   остаются только материал, № ЕКМТР, количества и суммы — d.row. */
 const USO_MTR = { data: null, state: "idle", err: "" };
+let QUSO = "";                        // поиск по таблице материалов
+let USO_EO_SITE = null;               // единица оборудования → площадка
+
 function usoMtrEnsure() {
   if (USO_MTR.state === "ready") return Promise.resolve(USO_MTR.data);
   if (USO_MTR.__p) return USO_MTR.__p;
@@ -2871,76 +2876,252 @@ function usoMtrEnsure() {
   USO_MTR.__p.catch(e => { USO_MTR.__p = null; USO_MTR.state = "err"; USO_MTR.err = String(e && e.message || e); if (TAB === "uso") renderTab(); });
   return USO_MTR.__p;
 }
+function usoAdopt(data) { USO_MTR.data = data; USO_MTR.state = "ready"; USO_MTR.__p = Promise.resolve(data); }
+
+/* Площадка единицы оборудования — чтобы фильтр площадки действовал и на
+   строках, учтённых на внутренних узлах 7101-7104: сам заказ там числится
+   не за площадкой техники, но ЕО у него настоящая. */
+function usoEoSite() {
+  if (USO_EO_SITE) return USO_EO_SITE;
+  const m = new Map();
+  (M.eoList || []).forEach(r => { const k = eoKey(r.e); if (r.s && !m.has(k)) m.set(k, r.s); });
+  USO_EO_SITE = m;
+  return m;
+}
+
+/* Один проход по заказам (37 тыс.) отсекает всё, что задано фильтрами
+   слева, и только потом идёт проход по строкам (338 тыс.) — так рендер
+   остаётся в десятках миллисекунд даже без индексов. */
+function usoOrderMask(d) {
+  const D = d.dict, O = d.ord, n = O.o.length;
+  const mask = new Uint8Array(n);
+  const keys = allowedEoKeys();
+  const eoSite = (F.sites.size) ? usoEoSite() : null;
+  const okYear = D.yr.map(y => YS.has(String(y)));
+  const okSite = D.st.map(s => !F.sites.size || F.sites.has(s));
+  const okWork = D.wk.map(w => !F.works.size || (w && F.works.has(w)));
+  const okMethod = D.mu.map(u => !F.methods.size || F.methods.has(u)
+    || (F.methods.has("Хозспособ") && u === "ХС") || (F.methods.has("Комбинированный") && u === "Комб"));
+  const okVendor = D.wc.map(w => !F.contractors.size || (w && F.contractors.has(vendor(w))));
+  const okReason = D.rs.map(rname => {
+    if (!F.capex.size && !F.capexReason.size) return true;
+    const bucket = capexBucket(rname);
+    if (!bucket) return false;
+    if (F.capex.size && !F.capex.has(bucket)) return false;
+    if (F.capexReason.size && !F.capexReason.has(rname)) return false;
+    return true;
+  });
+  const okMonth = D.mo.map(m => inMonth(m));
+  const okMaker = D.mf.map(x => !F.makers.size || F.makers.has(x));
+  const okModel = D.md.map(x => !F.models.size || F.models.has(x));
+  const eoKeys = D.eo.map(e => e ? eoKey(e) : "");
+  const eoFleet = eoKeys.map(k => k ? (M.eoFleet.get(k) || "") : "");
+
+  for (let i = 0; i < n; i++) {
+    if (!okYear[O.y[i]] || !okWork[O.wk[i]] || !okMethod[O.mu[i]] || !okVendor[O.wc[i]]
+      || !okReason[O.rs[i]] || !okMonth[O.mo[i]]) continue;
+    const ek = eoKeys[O.eo[i]];
+    if (F.sites.size) {
+      /* Площадка заказа — либо своя (1100…1400), либо площадка его ЕО,
+         если заказ учтён на внутреннем узле. */
+      const own = okSite[O.s[i]];
+      const viaEo = ek && eoSite.has(ek) && F.sites.has(eoSite.get(ek));
+      if (!own && !viaEo) continue;
+    }
+    if (F.fleets.size && !(ek && F.fleets.has(eoFleet[O.eo[i]]))) continue;
+    /* Класс/производитель/модель/гараж — общий мост дашборда по ЕО; если
+       ЕО у заказа нет, принимаем производителя и модель самой выгрузки. */
+    if (keys) {
+      if (ek) { if (!keys.has(ek)) continue; }
+      else if (!okMaker[O.mf[i]] || !okModel[O.md[i]]) continue;
+    } else if (!okMaker[O.mf[i]] || !okModel[O.md[i]]) continue;
+    mask[i] = 1;
+  }
+  return mask;
+}
+
+/* Агрегаты для вкладки: материалы (наименование × площадка × год),
+   контрагенты и годовая разбивка — всё одним проходом по строкам. */
+function usoMtrAgg(d) {
+  const D = d.dict, O = d.ord, R = d.row;
+  const mask = usoOrderMask(d);
+  const q = QUSO.trim().toLowerCase();
+  const nRows = R.o.length;
+
+  const ppzOn = F.ppz.size > 0;
+  const ppzCache = ppzOn ? new Map() : null;   // (позиция, код) → прошла ли фильтр ППЗ
+
+  const mats = new Map(), vends = new Map(), years = new Map();
+  let totP = 0, totA = 0, nRowsKept = 0, noVendA = 0, noVendN = 0;
+  const seenOrders = new Set();
+
+  for (let i = 0; i < nRows; i++) {
+    const oi = R.o[i];
+    if (!mask[oi]) continue;
+    const ni = R.n[i], eki = R.ek[i];
+    const name = D.nm[ni], ek = D.ek[eki];
+    if (ppzOn) {
+      const ck = ni * 1e7 + eki;
+      let pass = ppzCache.get(ck);
+      if (pass === undefined) { pass = passPpz(ek, name); ppzCache.set(ck, pass); }
+      if (!pass) continue;
+    }
+    if (q) {
+      const cat = oemOf(name);
+      if (!(name.toLowerCase().includes(q)
+        || (ek && ek.toLowerCase().includes(q))
+        || (cat && cat.toLowerCase().includes(q))
+        || D.md[O.md[oi]].toLowerCase().includes(q)
+        || D.mf[O.mf[oi]].toLowerCase().includes(q)
+        || O.o[oi].includes(q))) continue;
+    }
+    const p = R.p[i], a = R.a[i], qp = R.qp[i], qf = R.qf[i];
+    const site = D.st[O.s[oi]], year = D.yr[O.y[oi]];
+    totP += p; totA += a; nRowsKept++;
+    seenOrders.add(O.o[oi]);
+
+    const mk = ni + "|" + O.s[oi] + "|" + O.y[oi];
+    let m = mats.get(mk);
+    if (!m) mats.set(mk, m = { name, ek, cat: oemOf(name), mfr: D.mf[O.mf[oi]], model: D.md[O.md[oi]], s: site, y: year, qp: 0, qf: 0, p: 0, a: 0, orders: new Set() });
+    m.qp += qp; m.qf += qf; m.p += p; m.a += a; m.orders.add(O.o[oi]);
+    if (!m.ek && ek) m.ek = ek;
+
+    const wcRaw = D.wc[O.wc[oi]];
+    if (wcRaw) {
+      const vn = vendor(wcRaw);
+      let v = vends.get(vn);
+      if (!v) vends.set(vn, v = { name: vn, p: 0, a: 0, items: new Set(), orders: new Set() });
+      v.p += p; v.a += a; v.items.add(ni); v.orders.add(O.o[oi]);
+    } else { noVendA += a; noVendN++; }
+
+    let yr = years.get(year);
+    if (!yr) years.set(year, yr = { y: year, p: 0, a: 0, n: 0, orders: new Set() });
+    yr.p += p; yr.a += a; yr.n++; yr.orders.add(O.o[oi]);
+  }
+
+  const matRows = [...mats.values()].map(m => ({
+    name: m.name, ek: m.ek, cat: m.cat, mfr: m.mfr, model: m.model, s: m.s, y: m.y,
+    qp: Math.round(m.qp * 100) / 100, qf: Math.round(m.qf * 100) / 100,
+    p: m.p, a: m.a, n: m.orders.size
+  }));
+  const vendRows = [...vends.values()].map(v => ({
+    name: v.name, p: v.p, a: v.a, items: v.items.size, n: v.orders.size,
+    ex: v.p ? 100 * v.a / v.p : null
+  })).sort((x, y2) => y2.a - x.a);
+  const yearRows = [...years.values()].map(y => ({
+    y: y.y, p: y.p, a: y.a, n: y.n, orders: y.orders.size, ex: y.p ? 100 * y.a / y.p : null
+  })).sort((x, y2) => String(x.y).localeCompare(String(y2.y)));
+
+  return { matRows, vendRows, yearRows, totP, totA, nRowsKept, nOrders: seenOrders.size, noVendA, noVendN };
+}
+
 function usoMtrRender(host) {
   if (USO_MTR.state === "idle") usoMtrEnsure();
-  if (USO_MTR.state === "err") { host.innerHTML = callout("bad", `Не удалось загрузить материалы УСО (${esc(USO_MTR.err)}).`); return; }
-  if (USO_MTR.state !== "ready") { host.innerHTML = callout("info", "Загружается витрина материалов УСО (~13 МБ)…"); return; }
+  if (USO_MTR.state === "err") { host.innerHTML = callout("bad", `Не удалось загрузить материалы УСО (${esc(USO_MTR.err)}). <button type="button" class="minibtn" id="btnUsoRetry">Повторить</button>`); const b = host.querySelector("#btnUsoRetry"); if (b) b.onclick = () => { USO_MTR.state = "idle"; USO_MTR.__p = null; renderTab(); }; return; }
+  if (USO_MTR.state !== "ready") { host.innerHTML = callout("info", "Загружается витрина материалов УСО (~15 МБ)…"); return; }
   const d = USO_MTR.data;
-  const siteLab = s => d.meta.siteLabels[s] || (["7101", "7102", "7103", "7104", "2400"].includes(s) ? "Учётный узел " + s : s);
-  const okSite = s => !F.sites.size || d.meta.siteLabels[s] == null || F.sites.has(s);
-  const okYear = y => YS.has(String(y));
+  if (!d.row || !d.dict) { host.innerHTML = callout("bad", "Файл uso_mtr.json старого формата — пересоберите его на вкладке «Обновление данных»."); return; }
 
-  const mat = d.matSlices.filter(r => okSite(r.s) && okYear(r.y));
-  const vmat = d.vendorMatSlices.filter(r => okYear(r.y) && (!F.contractors.size || F.contractors.has(vendor(r.wc))));
-  const vend = d.vendorSlices.filter(r => okYear(r.y) && (!F.contractors.size || F.contractors.has(vendor(r.wc))));
-
-  const vAgg = new Map();
-  vend.forEach(r => {
-    const nm = vendor(r.wc);
-    let x = vAgg.get(nm); if (!x) vAgg.set(nm, x = { name: nm, p: 0, a: 0, n: 0, items: 0 });
-    x.p += r.p; x.a += r.a; x.n += r.n; x.items += r.items;
-  });
-  const vendRows = [...vAgg.values()].sort((a, b) => b.a - a.a);
-
-  const totP = sum(mat, r => r.p), totA = sum(mat, r => r.a);
-  const noVendRows = mat.filter(r => ["7101", "7102", "7103", "7104", "2400"].includes(r.s));
-  const noVendV = sum(noVendRows, r => r.a);
+  const A = usoMtrAgg(d);
+  const siteLab = s => d.meta.siteLabels[s] || (/^7\d{3}$|^2400$/.test(s) ? "Узел учёта " + s : s);
   const matchShare = d.meta.materialRows ? 100 * d.meta.matchedToContractor / d.meta.materialRows : null;
+  const filtersOn = countFilters();
 
   host.innerHTML =
-    callout("info", `Отдельная выгрузка (не PM-06): материалы, списанные подрядчиками при исполнении заказов УСО — ${esc(d.meta.years.join(", "))} гг., лист PM-06 файла «МТР УСО {год} all.xlsx». Строк-материалов ${num(d.meta.materialRows)} (ещё ${num(d.meta.serviceRowsDropped)} строк услуг без материала — исключены), из них с контрагентом сопоставлено ${num(d.meta.matchedToContractor)} (${pct(matchShare)}) — через номер заказа по той же полной детализации, что и вкладка «Заказы». Новые годы (2028 и далее) загружаются вручную на вкладке «Обновление данных» — без пересборки на сервере.`) +
+    callout("info", `Отдельная выгрузка (не PM-06): материалы, списанные подрядчиками при исполнении заказов УСО — ${esc(d.meta.years.join(", "))} гг. Всего в витрине ${num(d.meta.materialRows)} строк (${num(d.meta.serviceRowsDropped)} строк услуг без материала исключены), с контрагентом сопоставлено ${num(d.meta.matchedToContractor)} (${pct(matchShare)}) — через номер заказа по той же полной детализации, что и вкладка «Заказы». Оттуда же берутся вид работы, способ, причина инвестиций и базис-месяц, поэтому <b>все фильтры слева действуют и здесь</b>. Новые годы загружаются вручную на вкладке «Обновление данных».`) +
     (d.meta.corruptFactRows ? callout("warn", `В источнике у ${num(d.meta.corruptFactRows)} строк поле «Количество факт» содержало не количество, а цену за единицу (совпадает с плановой ценой) — стоимость факт при этом считалась как цена в квадрате и раздувала факт в тысячи раз на одной строке (единственная такая заявка 2027 года давала 4,57 из 5,25 млрд ₽ факта за весь год). Кол-во и сумма факта по этим строкам обнулены (${shortR(d.meta.corruptFactValue)} исключено), план не тронут — проверка выполняется автоматически и при ручной загрузке новых лет.`) : "") +
-    (noVendV ? callout("warn", `${shortR(noVendV)} факта (${num(noVendRows.length)} строк) числится на учётных узлах 7101-7104 — это не площадки техники, а внутренние коды отражения подрядных затрат; полной детализации заказов по ним нет, контрагента для этих строк установить нельзя. Они входят в суммы ниже, но не входят в разбивку по контрагентам.`) : "") +
+    (A.noVendN ? callout("warn", `${shortR(A.noVendA)} факта (${num(A.noVendN)} строк) — заказы, которых нет в полной детализации ТОиР: контрагента для них установить нельзя. Они входят в суммы и в таблицу материалов, но не в разбивку по контрагентам.`) : "") +
     `<div class="kpis" id="usoMtrKpi"></div>
-     <div class="grid">${card("Контрагенты по материалам", "факт материалов, списанных на заказы подряда — отдельно от стоимости самой услуги", "tUsoMtrV", { tools: dlBtn("tUsoMtrV"), foot: "Не то же самое, что «Факт УСО» в таблице выше: там — стоимость услуги/работы по договору, здесь — стоимость материалов, которые контрагент списал при её исполнении." })}</div>
+     <div class="grid g2">
+       ${card("Материалы УСО по годам", "план, факт и исполнение в текущем срезе", "cUsoY", { foot: "Диаграмма и все таблицы ниже считаются по строкам витрины на лету — любой фильтр слева меняет их сразу." })}
+       ${card("Контрагенты по материалам", "20 крупнейших по факту материалов", "cUsoV", { foot: "Не то же самое, что «Факт УСО» выше: там — стоимость услуги по договору, здесь — стоимость материалов, списанных при её исполнении." })}
+     </div>
+     <div class="grid">${card("Контрагенты: материалы в заказах подряда", "план, факт и исполнение по материалам", "tUsoMtrV", { tools: dlBtn("tUsoMtrV") })}</div>
+     <div class="quickfind" style="margin:12px 0"><label>Поиск в материалах<input type="search" id="qUso" placeholder="наименование, № ЕКМТР, каталожный №, модель или заказ" value="${esc(QUSO)}"></label></div>
      <div class="grid">${card("Материалы в заказах УСО", "клик по заголовку — сортировка", "tUsoMtrM", { tools: dlBtn("tUsoMtrM") })}</div>`;
 
   document.getElementById("usoMtrKpi").innerHTML = kpi([
-    { l: "Материалов списано", v: shortR(totA), s: `план ${short(totP)} · исполнение ${pct(totP ? 100 * totA / totP : null)}`, tone: "accent" },
-    { l: "Позиций (материал×узел×год)", v: num(mat.length), s: `${num(uniq(mat.map(r => r.name)).length)} наименований` },
-    { l: "Сопоставлено с контрагентом", v: pct(matchShare), s: `${num(d.meta.matchedToContractor)} из ${num(d.meta.materialRows)} строк источника`, tone: matchShare != null && matchShare < 80 ? "warn" : "good" },
-    { l: "Контрагентов с материалами", v: num(vendRows.length), s: vendRows[0] ? "крупнейший: " + esc(trunc(vendRows[0].name, 24)) : "" }
+    { l: "Материалов списано", v: shortR(A.totA), s: `план ${short(A.totP)} · исполнение ${pct(A.totP ? 100 * A.totA / A.totP : null)}`, tone: "accent" },
+    { l: "Строк в срезе", v: num(A.nRowsKept), s: `${num(A.matRows.length)} позиций · ${num(A.nOrders)} заказов${filtersOn ? " · фильтров: " + num(filtersOn) : " · без фильтров"}` },
+    { l: "Наименований", v: num(uniq(A.matRows.map(r => r.name)).length), s: `${num(uniq(A.matRows.map(r => r.ek).filter(Boolean)).length)} с № ЕКМТР` },
+    { l: "Контрагентов", v: num(A.vendRows.length), s: A.vendRows[0] ? "крупнейший: " + esc(trunc(A.vendRows[0].name, 22)) : "—" },
+    { l: "Сопоставлено с контрагентом", v: pct(A.totA ? 100 * (A.totA - A.noVendA) / A.totA : null), s: "доля факта, у которого известен подрядчик", tone: A.noVendA ? "warn" : "good" }
   ]);
 
+  CHART.bars(host.querySelector("#cUsoY"), {
+    height: 240, valueFmt: shortR,
+    labels: A.yearRows.map(r => r.y),
+    series: [
+      { name: "План", color: "var(--c3)", data: A.yearRows.map(r => r.p) },
+      { name: "Факт", color: "var(--c1)", data: A.yearRows.map(r => r.a) }
+    ]
+  });
+  CHART.bars(host.querySelector("#cUsoV"), {
+    height: 240, horizontal: true, labelW: 150, valueFmt: shortR,
+    labels: A.vendRows.slice(0, 20).map(r => trunc(r.name, 24)),
+    series: [{ name: "Факт материалов", color: "var(--c1)", data: A.vendRows.slice(0, 20).map(r => r.a) }]
+  });
+
   tableView(host.querySelector("#tUsoMtrV"), {
-    id: "tUsoMtrV", sort: "a", rows: vendRows, bar: "a", maxH: 380,
+    id: "tUsoMtrV", sort: "a", rows: A.vendRows, bar: "a", maxH: 380,
+    empty: "Нет контрагентов в текущем срезе",
+    /* Клик по контрагенту — это фильтр «Подрядчик» слева: тот же срез
+       применится и к остальным вкладкам, а не только к этой таблице. */
+    onRow: r => {
+      if (F.contractors.has(r.name) && F.contractors.size === 1) F.contractors.clear();
+      else { F.contractors.clear(); F.contractors.add(r.name); }
+      refresh();
+    },
+    isSel: r => F.contractors.has(r.name),
     cols: [
       { k: "name", t: "Контрагент", cls: "name" },
       { k: "items", t: "Наименований", n: true, fmt: num },
       { k: "n", t: "Заказов", n: true, fmt: num },
-      { k: "p", t: "План, ₽", n: true, fmt: shortR },
-      { k: "a", t: "Факт, ₽", n: true, fmt: shortR }
+      { k: "p", t: "План, ₽", n: true, fmt: shortR, pf: "plan" },
+      { k: "a", t: "Факт, ₽", n: true, fmt: shortR, pf: "fact" },
+      { k: "ex", t: "Исполнение", n: true, fmt: v => v == null ? "—" : `<span class="tag ${v >= 90 && v <= 110 ? "g" : v > 110 ? "b" : "w"}">${pct(v)}</span>` }
     ],
-    foot: { name: "Итого сопоставлено", p: shortR(sum(vendRows, r => r.p)), a: shortR(sum(vendRows, r => r.a)) }
+    foot: { name: "Итого", p: shortR(sum(A.vendRows, r => r.p)), a: shortR(sum(A.vendRows, r => r.a)) }
   });
 
   tableView(host.querySelector("#tUsoMtrM"), {
-    id: "tUsoMtrM", sort: "a", rows: mat, bar: "a", maxH: 480,
+    id: "tUsoMtrM", sort: "a", rows: A.matRows, bar: "a", maxH: 520, limit: 600,
+    empty: "Нет материалов в текущем срезе — ослабьте фильтры или измените поиск",
+    /* Клик по материалу открывает его карточку на вкладке «Материалы /
+       ППЗ» — там история позиции по годам, ППЗ, аналоги и остаток. */
+    onRow: r => {
+      const code = r.ek || ekOf(r.name);
+      const i = (code && MTRU.ix) ? MTRU.ix.get(code) : undefined;
+      /* Витрина материалов грузится отдельно: если её ещё нет, открываем
+         вкладку с поиском по коду — она подтянет данные и найдёт позицию
+         сама, а не покажет пустую карточку. */
+      if (i != null) { SELMAT = i; QMAT = ""; }
+      else { SELMAT = null; QMAT = code || r.name; }
+      setTab("mat");
+    },
     cols: [
       { k: "name", t: "Материал", cls: "name" },
-      { k: "comp", t: "№ ЕКМТР", cls: "dim", fmt: (v, r) => { const c = v || ekOf(r.name); return c ? `<code style="font-size:11px">${esc(c)}</code>` : "—"; }, raw: (v, r) => v || ekOf(r.name) || "", hint: "Из выгрузки «МТР УСО», при отсутствии — по совпадению наименования со справочником ЕКМТР" },
+      { k: "ek", t: "№ ЕКМТР", cls: "dim", fmt: (v, r) => { const c = v || ekOf(r.name); return c ? `<code style="font-size:11px">${esc(c)}</code>` : "—"; }, raw: (v, r) => v || ekOf(r.name) || "", hint: "Из выгрузки «МТР УСО», при отсутствии — по совпадению наименования со справочником ЕКМТР" },
+      { k: "cat", t: "Каталожный №", cls: "dim", fmt: v => v ? `<code style="font-size:11px">${esc(v)}</code>` : "—", hint: "Номер детали производителя из каталога oem_idx.json — по наименованию позиции" },
       { k: "mfr", t: "Производитель", cls: "dim" },
       { k: "model", t: "Модель/узел", cls: "dim name" },
       { k: "s", t: "Площадка / узел учёта", fmt: siteLab },
       { k: "y", t: "Год", cls: "dim" },
       { k: "qp", t: "Кол-во план", n: true, fmt: v => v ? NF2.format(v) : "—" },
       { k: "qf", t: "Кол-во факт", n: true, fmt: v => v ? NF2.format(v) : "—" },
-      { k: "p", t: "План, ₽", n: true, fmt: shortR },
-      { k: "a", t: "Факт, ₽", n: true, fmt: shortR },
+      { k: "p", t: "План, ₽", n: true, fmt: shortR, pf: "plan" },
+      { k: "a", t: "Факт, ₽", n: true, fmt: shortR, pf: "fact" },
       { k: "n", t: "Заказов", n: true, fmt: num }
     ],
-    foot: { name: "Итого", p: shortR(totP), a: shortR(totA) }
+    foot: { name: "Итого", p: shortR(A.totP), a: shortR(A.totA) }
   });
+
+  const qi = host.querySelector("#qUso");
+  if (qi) qi.oninput = debounce(e => {
+    QUSO = e.target.value; renderTab();
+    const n = document.getElementById("qUso");
+    if (n) { n.focus(); n.setSelectionRange(n.value.length, n.value.length); }
+  }, 260);
 }
 
 /* ---------- Контрагенты УСО ---------- */
@@ -5745,11 +5926,92 @@ PANES.dq = function (host) {
 /* =====================================================================
    9. Оркестрация и события
    ===================================================================== */
+/* Какие фильтры сайдбара вкладка действительно применяет. Витрины
+   собраны с разной гранулярностью: подрядчик есть только там, где данные
+   идут от заказа, снимок запасов не знает года, CAPEX/OPEX собран без
+   разреза по технике и месяцу. Раньше несовпадение было молчаливым —
+   фильтр стоял, цифры не менялись, и понять это можно было только
+   пересчётом вручную. Теперь каждая вкладка честно говорит, что из
+   выставленного к ней не относится. Ключ "eq" — класс/производитель/
+   модель/гараж (они ходят одним мостом allowedEoKeys). */
+const FILTER_LABELS = {
+  sites: "площадка", years: "год", methods: "способ", fleets: "парк", works: "вид работы",
+  capex: "CAPEX/OPEX", eq: "техника (класс/производитель/модель/гараж)",
+  contractors: "подрядчик", ppz: "подгруппа плана закупа", month: "период (месяцы)"
+};
+const TAB_FILTERS = {
+  sum: { on: ["sites", "years", "methods", "fleets", "works", "eq", "month"], why: "Сводка считается по витрине куба: подрядчик и причина инвестиций в ней не разложены — они есть на вкладках «Контрагенты УСО» и «CAPEX / OPEX»." },
+  dyn: { on: ["sites", "years", "methods", "fleets", "works", "eq", "capex", "month"], why: "Динамика считается по витрине куба, где подрядчик не разложен, — он есть на вкладке «Контрагенты УСО»." },
+  capex: { on: ["sites", "years", "methods", "fleets", "works", "capex"], why: "capex.json собран на гранулярности площадка × год × парк × способ × вид работы × причина — без единицы оборудования, подрядчика и базис-месяца." },
+  link: { on: ["sites", "years", "fleets", "eq", "month"], why: "КТГ — техническая готовность единицы во времени: способ, вид работы, подрядчик и причина инвестиций относятся к заказу, а не к готовности." },
+  ktg: { on: ["sites", "years", "fleets", "eq", "month"], why: "КТГ — техническая готовность единицы во времени: способ, вид работы, подрядчик и причина инвестиций относятся к заказу, а не к готовности." },
+  uso: { on: ["sites", "years", "methods", "fleets", "works", "eq", "capex", "contractors", "ppz", "month"], why: "" },
+  mtr: { on: ["sites", "years", "eq", "contractors", "ppz"], why: "Витрина ЕКМТР агрегирована по наименованию × площадка × год: способа, вида работы, причины инвестиций и базис-месяца в ней нет." },
+  mat: { on: ["sites", "years", "methods", "fleets", "works", "eq", "capex", "contractors", "ppz"], why: "Витрина материалов собрана по годам — базис-месяц в неё не заложен." },
+  stk: { on: ["sites", "capex", "ppz"], why: "Остаток — снимок на дату, а не оборот за период: год, месяц и разрезы заказа (способ, вид работы, подрядчик, техника) к нему не применяются. На расход и план в тех же таблицах фильтр года действует." },
+  prov: { on: ["sites", "years", "methods", "fleets", "works", "eq", "capex", "contractors", "ppz"], why: "Обеспеченность считается по составу будущих заказов; остаток — снимок на дату, базис-месяц к нему не применяется." },
+  rep: { on: ["sites", "years", "methods", "fleets", "works", "eq", "capex", "contractors", "ppz"], why: "Записка считается по витринам материалов и запасов — базис-месяц в них не заложен." },
+  eo: { on: ["sites", "years", "fleets", "eq", "month"], why: "Разложение по единицам собрано без разреза по способу, виду работы, подрядчику и причине инвестиций — они есть на вкладке «Заказы»." },
+  todr: { on: [], why: "Пилот по одной модели: вкладка намеренно считает весь парк DR75 площадки 1200 за все годы — фильтры слева на неё не действуют, чтобы выборку нельзя было случайно сузить." },
+  vmz: { on: ["sites", "years", "fleets", "eq", "contractors"], why: "Витрина ВМЗ агрегирована по подразделению × площадка × год — способа, вида работы, причины инвестиций и базис-месяца в ней нет." },
+  ord: { on: ["sites", "years", "methods", "fleets", "works", "eq", "capex", "contractors", "ppz"], why: "Полная детализация грузится по площадко-годам, внутри них базис-месяц не отсекается." },
+  cmp: { on: ["sites"], why: "Вкладка сравнивает два плановых года целиком — сужать её остальными фильтрами значило бы сравнивать разные выборки." },
+  doc: { on: [], why: "Методика не зависит от среза." },
+  dq: { on: [], why: "Проверки качества считаются по всей выгрузке — иначе они показывали бы пробелы только выбранного среза." },
+  upd: { on: [], why: "Пересборка данных не зависит от среза." }
+};
+function activeFilterGroups() {
+  const on = [];
+  if (F.sites.size) on.push("sites");
+  if (F.years.size) on.push("years");
+  if (F.methods.size) on.push("methods");
+  if (F.fleets.size) on.push("fleets");
+  if (F.works.size) on.push("works");
+  if (F.capex.size || F.capexReason.size) on.push("capex");
+  if (F.kcls.size || F.makers.size || F.models.size || F.garages.size) on.push("eq");
+  if (F.contractors.size) on.push("contractors");
+  if (F.ppz.size || F.ppzk.size) on.push("ppz");
+  if (F.mFrom || F.mTo) on.push("month");
+  return on;
+}
+function ignoredFilterGroups() {
+  const spec = TAB_FILTERS[TAB];
+  if (!spec) return [];
+  return activeFilterGroups().filter(g => spec.on.indexOf(g) < 0);
+}
+function dropFilterGroups(groups) {
+  groups.forEach(g => {
+    if (g === "sites") F.sites.clear();
+    else if (g === "years") F.years.clear();
+    else if (g === "methods") F.methods.clear();
+    else if (g === "fleets") F.fleets.clear();
+    else if (g === "works") F.works.clear();
+    else if (g === "capex") { F.capex.clear(); F.capexReason.clear(); }
+    else if (g === "eq") { F.kcls.clear(); F.makers.clear(); F.models.clear(); F.garages.clear(); }
+    else if (g === "contractors") F.contractors.clear();
+    else if (g === "ppz") { F.ppz.clear(); F.ppzk.clear(); }
+    else if (g === "month") { F.mFrom = ""; F.mTo = ""; }
+  });
+}
+function filterNotice() {
+  const spec = TAB_FILTERS[TAB];
+  const ignored = ignoredFilterGroups();
+  if (!ignored.length) return "";
+  const many = ignored.length > 1;
+  const names = ignored.map(g => FILTER_LABELS[g] || g).join(", ");
+  return callout("warn", `На этой вкладке не действу${many ? "ют" : "ет"} фильтр${many ? "ы" : ""}: <b>${esc(names)}</b> — цифры ниже посчитаны без ${many ? "них" : "него"}. ${esc(spec.why)} <button type="button" class="minibtn" id="btnDropIgnored">Снять ${many ? "их" : "его"}</button>`);
+}
 function renderTab() {
   const host = document.getElementById("panes");
   host.innerHTML = "";
   const fn = PANES[TAB];
   if (fn) { try { fn(host); } catch (e) { host.innerHTML = callout("bad", "Не удалось построить вкладку: " + esc(e && e.message || e)); console.error(e); } }
+  const note = filterNotice();
+  if (note) {
+    host.insertAdjacentHTML("afterbegin", note);
+    const btn = host.querySelector("#btnDropIgnored");
+    if (btn) btn.onclick = () => { dropFilterGroups(ignoredFilterGroups()); refresh(); };
+  }
   renderCtx();
 }
 function renderCtx() {
@@ -5912,7 +6174,7 @@ async function updDownload() {
    ТОиР (data/{площадка}_{год}.json) по всем 4 площадкам за те же годы —
    догружается здесь же, независимо от того, что выбрано в фильтрах
    слева (это разовая операция обновления, а не витрина среза). */
-const UPD_USO = { files: [], results: [], merged: null, updatedYears: null, busy: false, msg: "", err: "", progress: null };
+const UPD_USO = { files: [], results: [], merged: null, updatedYears: null, wasTotals: null, busy: false, msg: "", err: "", progress: null };
 const UPD_USO_SITES = ["1100", "1200", "1300", "1400"];
 
 function updUsoParseName(name) {
@@ -5932,33 +6194,41 @@ function ensureDetailLoadedAsync(combos) {
   });
 }
 
-/* Контрагент заказа — самое частое «Рабочее место» среди его строк в
-   полной детализации (заказ теоретически может проходить по нескольким
-   рабочим местам на разных строках — берём преобладающее), тем же
-   приёмом, что и build_uso_mtr.py (Counter.most_common). */
-async function usoUpdBuildOrder2Wc(years) {
+/* Свойства заказа из полной детализации: контрагент («Рабочее место»),
+   вид работы, способ, причина инвестиций, базис-дата и единица
+   оборудования — ими фильтруется вся вкладка «Контрагенты УСО». Значения,
+   которые в детализации лежат построчно, берём преобладающие по заказу
+   (заказ формально может проходить по нескольким рабочим местам), тем же
+   приёмом, что и build_uso_mtr2.py (Counter.most_common). */
+async function usoUpdBuildOrderProps(years) {
   const combos = [];
   UPD_USO_SITES.forEach(s => years.forEach(y => combos.push({ s, y, key: s + "_" + y })));
   const dets = await ensureDetailLoadedAsync(combos);
-  const order2wc = new Map();
+  const props = new Map();
   dets.forEach(entry => {
     const d = entry.data;
-    if (!d || !d.wc || !d.wci) return;
-    const cnt = new Map();
+    if (!d) return;
+    const acc = new Map();
+    const bump = (m, k, v) => { if (v) m.set(v, (m.get(v) || 0) + 1); };
     for (let i = 0; i < d.n; i++) {
-      const w = d.wc[d.wci[i]];
-      if (!w) continue;
       const o = d.o[i];
-      let m = cnt.get(o); if (!m) cnt.set(o, m = new Map());
-      m.set(w, (m.get(w) || 0) + 1);
+      let x = acc.get(o);
+      if (!x) acc.set(o, x = { wc: new Map(), w: new Map(), u: new Map(), e: new Map() });
+      if (d.wc && d.wci) bump(x.wc, 0, d.wc[d.wci[i]]);
+      if (d.w && d.wi) bump(x.w, 0, d.w[d.wi[i]]);
+      if (d.u) bump(x.u, 0, d.u[i]);
+      if (d.e && d.ei) bump(x.e, 0, d.e[d.ei[i]]);
     }
-    cnt.forEach((m, o) => {
-      let best = "", bn = -1;
-      m.forEach((n, w) => { if (n > bn) { bn = n; best = w; } });
-      order2wc.set(o, best);
+    const top = m => { let best = "", bn = -1; m.forEach((n, v) => { if (n > bn) { bn = n; best = v; } }); return best; };
+    acc.forEach((x, o) => {
+      const od = (d.od && d.od[o]) || [null, null];
+      props.set(o, {
+        wc: top(x.wc), w: top(x.w), u: top(x.u), e: top(x.e),
+        bs: od[0] || "", orr: String((d.orr && d.orr[o]) || "").trim()
+      });
     });
   });
-  return order2wc;
+  return props;
 }
 
 async function updUsoRun() {
@@ -5993,14 +6263,15 @@ async function updUsoRun() {
        с build_uso_mtr.py, который сопоставлял сразу по всем годам). */
     const lookupYears = [...new Set(years.flatMap(y => [String(+y - 1), y, String(+y + 1)]))];
     const barTxt = document.getElementById("updUsoBarTxt");
-    if (barTxt) barTxt.textContent = "Сопоставление контрагентов по номеру заказа (" + years.join(", ") + ")…";
-    const order2wc = await usoUpdBuildOrder2Wc(lookupYears);
-    const agg = USOPIPE.aggregate(results, order2wc);
-    UPD_USO.updatedYears = new Set(years);
-    UPD_USO.merged = USOPIPE.mergeIntoData(USO_MTR.data, agg, UPD_USO.updatedYears);
+    if (barTxt) barTxt.textContent = "Свойства заказов из детализации ТОиР (" + years.join(", ") + ")…";
+    const props = await usoUpdBuildOrderProps(lookupYears);
+    UPD_USO.wasTotals = USOPIPE.yearTotals(USO_MTR.data);
+    const m = USOPIPE.mergeIntoData(USO_MTR.data, results, props);
+    UPD_USO.updatedYears = m.updatedYears;
+    UPD_USO.merged = m.data;
     UPD_USO.results = results;
     UPD_USO.progress = null;
-    UPD_USO.msg = `Готово: разобрано ${results.length} файлов (${years.join(", ")}), ${num(agg.totalRows)} строк материалов, сопоставлено с контрагентом ${num(agg.matched)} (${pct(agg.totalRows ? 100 * agg.matched / agg.totalRows : null)}). Проверьте изменения ниже, затем примените или скачайте файл.`;
+    UPD_USO.msg = `Готово: разобрано ${results.length} файлов (${years.join(", ")}), ${num(m.freshRows)} строк материалов, сопоставлено с контрагентом ${num(m.matched)} (${pct(m.freshRows ? 100 * m.matched / m.freshRows : null)}). Проверьте изменения ниже, затем примените или скачайте файл.`;
   } catch (e) {
     UPD_USO.err = String(e && e.message || e);
     UPD_USO.progress = null;
@@ -6011,8 +6282,7 @@ async function updUsoRun() {
 
 function updUsoApply() {
   if (!UPD_USO.merged) return;
-  USO_MTR.data = UPD_USO.merged;
-  USO_MTR.state = "ready";
+  usoAdopt(UPD_USO.merged);
   UPD_USO.msg = "Новые годы применены к текущему сеансу (вкладка «Контрагенты УСО»). Чтобы они остались после перезагрузки — скачайте файл и распакуйте его в папку отчёта.";
   refresh();
 }
@@ -6083,13 +6353,15 @@ function updUsoRender(host) {
   }
 
   if (UPD_USO.merged) {
-    const cur = USO_MTR.data;
+    const wasT = UPD_USO.wasTotals || new Map();
+    const nowT = USOPIPE.yearTotals(UPD_USO.merged);
     const diff = [...UPD_USO.updatedYears].sort().map(y => {
-      const was = (cur.matSlices || []).filter(r => String(r.y) === y);
-      const now = (UPD_USO.merged.matSlices || []).filter(r => String(r.y) === y);
-      const wasP = sum(was, r => r.p), wasA = sum(was, r => r.a);
-      const nowP = sum(now, r => r.p), nowA = sum(now, r => r.a);
-      return { y, wasN: was.length, nowN: now.length, wasP, nowP, wasA, nowA, dP: nowP - wasP, dA: nowA - wasA };
+      const was = wasT.get(y) || { p: 0, a: 0, n: 0 };
+      const now = nowT.get(y) || { p: 0, a: 0, n: 0 };
+      return {
+        y, wasN: was.n, nowN: now.n, wasP: was.p, nowP: now.p, wasA: was.a, nowA: now.a,
+        dP: now.p - was.p, dA: now.a - was.a
+      };
     });
     host.insertAdjacentHTML("beforeend",
       `<div class="grid">${card("Что изменится", "сравнение с данными, загруженными сейчас", "updUsoDiff", {

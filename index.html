@@ -6705,6 +6705,10 @@ function finishBoot(cube, ktg) {
   syncStaticInputs();
   const hash = location.hash.replace("#", "");
   TAB = PANES[hash] ? hash : (PANES[TAB] ? TAB : "sum");
+  // Переход по ссылке из другой витрины (например WK CRM): ?ekmtr=<код> —
+  // открывает вкладку «МТР / ЕКМТР» сразу с этим кодом в поиске.
+  const linkEkmtr = new URLSearchParams(location.search).get("ekmtr");
+  if (linkEkmtr) { QMTR = linkEkmtr; QORD = ""; QCAT = ""; TAB = "mtr"; }
   document.querySelectorAll("#tabs button").forEach(b => b.classList.toggle("on", b.dataset.t === TAB));
   setBoot(100, "готово");
   refresh();

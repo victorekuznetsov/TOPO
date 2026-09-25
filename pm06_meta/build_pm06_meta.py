@@ -160,6 +160,7 @@ def extract(path, name, work):
              kind=col("Заказ Вид заказа"), kindt=col("Заказ Вид заказа", 1),
              w=col("Заказ Вид работы ТОРО"), bs=col("Заказ Базисный срок начала (дата)"),
              pp=col("Заказ Завод, планирующий ТОРО"),
+             pg=col("Заказ Группа планирования ТОРО"), pgt=col("Заказ Группа планирования ТОРО", 1),
              ek=col("Компонент Заказа/Заявки", 1), rz=col("Компонент Заказа Резерв./заявка"),
              p=col("Стоимость МТР, План"), a=col("Стоимость МТР, Факт"),
              up=col("Стоимость УСО, План"), uf=col("Стоимость УСО, Факт"),
@@ -179,6 +180,7 @@ def extract(path, name, work):
                 "usr": (get(r, "usr") or "#").strip(), "kind": get(r, "kind") or "",
                 "kindText": get(r, "kindt") or "", "w": get(r, "w") or "",
                 "bs": get(r, "bs") or "", "pp": get(r, "pp") or "",
+                "pg": (get(r, "pg") or "").strip(), "pgText": (get(r, "pgt") or "").strip(),
                 "eon": get(r, "eon") or "", "wk": False, "plan": 0.0, "fact": 0.0}
         if "WK" in (get(r, "eo") or "").upper().replace("-", ""):
             g["wk"] = True
@@ -248,16 +250,25 @@ def assemble(work, out):
         ui = {x: i for i, x in enumerate(usrd)}
         ki = {x: i for i, x in enumerate(kd)}
         kt = {v["kind"]: v["kindText"] for v in O.values()}
+        # группа планирования ТОРО (код «завод/группа», с 2024 года); "" — нет в выгрузке
+        pgd = sorted({v.get("pg") or "" for v in O.values()})
+        pi = {x: i for i, x in enumerate(pgd)}
+        pgt = {}
+        for v in O.values():
+            if v.get("pg") and v.get("pgText"):
+                pgt.setdefault(v["pg"], v["pgText"])
         src = "TOPO ветка rawdata: " + ", ".join("M06_" + f for f in sorted(sources[(site, year)]))
         status = {
             "meta": {"site": site, "year": year, "orders": len(O), "source": src,
-                     "columns": "o[заказ] = [индекс в sys, индекс в usr, индекс в kind, фаза, копия-оригинал]",
+                     "columns": "o[заказ] = [индекс в sys, индекс в usr, индекс в kind, фаза, копия-оригинал, индекс в pg]",
                      "phases": PHASES,
+                     "pgRule": "pg — «Заказ Группа планирования ТОРО» (завод/группа): 100 Механика и 200 Энергетика планирует АО «Развитие», 300–900 — службы БЕ (заказчика). Пусто — поля нет в выгрузке (до 2024 года).",
                      "phaseRule": "ЗАКР > ТЗКР > ДЕБЛ/ЧДЕБ > ОТКР; нет статуса (#) — позиция графика ППР без заказа SAP, в план не входит. Заказ закрыт при фазе ТЗКР или ЗАКР.",
                      "copyRule": "1 — заказ БЕ, у которого есть копия АО «Развитие» (та же ЕО, вид работ, базисная дата начала): факт учитывать, неисполненный план — нет."},
             "sys": sysd, "usr": usrd, "kind": kd, "kindText": {k: kt[k] for k in kd},
+            "pg": pgd, "pgText": {k: pgt.get(k, "") for k in pgd if k},
             "o": {o: [si[norm(v["sys"])], ui[norm(v["usr"])], ki[v["kind"]],
-                      phase_of(v["sys"]), 1 if v["copyOriginal"] else 0]
+                      phase_of(v["sys"]), 1 if v["copyOriginal"] else 0, pi[v.get("pg") or ""]]
                   for o, v in sorted(O.items())}}
         with open(os.path.join(out, "order_status", f"{site}_{year}.json"), "w", encoding="utf-8") as f:
             json.dump(status, f, ensure_ascii=False, separators=(",", ":"))
